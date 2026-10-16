@@ -47,7 +47,7 @@ async function BanksTable() {
                     <td className="font-mono text-xs">{b.slug}</td>
                     <td>{b.active ? <Badge tone="good">active</Badge> : <Badge tone="neutral">inactive</Badge>}</td>
                     <td className="text-sm">
-                      {b.requireBankApproval ? <Badge tone="info">bank approver required</Badge> : <Badge tone="warn">platform may approve</Badge>}
+                      {b.requireBankApproval ? <Badge tone="info">approval ON</Badge> : <Badge tone="warn">approval OFF</Badge>}
                     </td>
                     <td className="text-right tabular-nums">{b._count.users}</td>
                     <td className="whitespace-nowrap text-xs text-muted">{fmtDate(b.createdAt)}</td>

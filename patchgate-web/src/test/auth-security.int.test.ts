@@ -8,10 +8,9 @@ import { configureTestEnv, resetDb } from "./helpers";
 configureTestEnv({ AUTH_MODE: "local", AUTH_ENC_KEY: "ab".repeat(32) });
 
 const { prisma } = await import("@/lib/db");
-const { beginPasswordLogin, verifyTotpStep, changePasswordStep } = await import("@/lib/auth/local-login");
+const { beginPasswordLogin, changePasswordStep } = await import("@/lib/auth/local-login");
 const { createUser, updateUser, userAction, createTenant } = await import("@/lib/auth/admin-service");
 const { hashPassword } = await import("@/lib/auth/password");
-const { base32Decode, hotp, totpStep } = await import("@/lib/auth/totp");
 const { flushUnknownLoginSummary, resetUnknownLoginSummary } = await import("@/lib/auth/unknown-login-summary");
 const { resolveOidcAccount } = await import("@/lib/auth/oidc");
 const { auditTenantSwitch } = await import("@/lib/auth/vendor-access");
@@ -23,7 +22,6 @@ type LoginStep = import("@/lib/auth/local-login").LoginStep;
 const META = { ip: "10.0.0.1", userAgent: "vitest" };
 const STRONG = "orbit-Kettle-7-sandstone-river";
 const STRONG2 = "quartz-Lantern-9-meadow-falcon";
-const codeFor = (secret: string, when: Date) => hotp(base32Decode(secret), totpStep(when.getTime()));
 const asActor = (u: { id: string; role: SessionUser["role"]; upn: string; name: string; tenantId: string | null }): SessionUser => ({ id: u.id, role: u.role, upn: u.upn, name: u.name, tenantId: u.tenantId });
 
 function expectStep<S extends Extract<LoginStep, { ok: true }>["step"]>(r: LoginStep, step: S): Extract<LoginStep, { step: S }> {
@@ -48,12 +46,10 @@ async function setup() {
   return { root, bank, other, bankAdmin };
 }
 
-/** First sign-in with a temporary password: enrol TOTP, change password. Returns the TOTP secret. */
-async function firstLogin(upn: string, temporaryPassword: string, when: Date): Promise<string> {
-  const enrol = expectStep(await beginPasswordLogin({ upn, password: temporaryPassword }, META, when), "enroll");
-  const change = expectStep(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, when), META, when), "change-password");
+/** First sign-in with a temporary password: change it, get a session. */
+async function firstLogin(upn: string, temporaryPassword: string, when: Date): Promise<void> {
+  const change = expectStep(await beginPasswordLogin({ upn, password: temporaryPassword }, META, when), "change-password");
   expectStep(await changePasswordStep(change.challengeToken, STRONG, META, when), "done");
-  return enrol.secret.replace(/\s+/g, "");
 }
 
 const lastLogin = async (userId: string) =>
@@ -67,7 +63,7 @@ describe("finding #3: credential resets are platform-only (accounts are issued b
     const before = await prisma.user.findMany({ orderBy: { upn: "asc" } });
 
     for (const target of [approver.id, aud.id]) {
-      for (const action of ["reset-password", "reset-mfa", "unlock"] as const) {
+      for (const action of ["reset-password", "unlock"] as const) {
         await expect(userAction(bankAdmin, target, action)).rejects.toMatchObject({ status: 403 });
       }
       await expect(updateUser(bankAdmin, target, { role: "ADMIN" })).rejects.toMatchObject({ status: 403 });
@@ -104,31 +100,22 @@ describe("finding #3: credential resets are platform-only (accounts are issued b
     const { root, bank } = await setup();
     const { user, temporaryPassword } = await createUser(root, { upn: "teller@bank-a.test", name: "Teller", role: "AUDITOR", tenantId: bank.id });
     const t0 = new Date(Date.now() - 120_000);
-    const secret0 = await firstLogin(user.upn, temporaryPassword, t0);
+    await firstLogin(user.upn, temporaryPassword, t0);
     expect((await lastLogin(user.id)).payload).not.toHaveProperty("afterReset");
-    expect(secret0).toBeTruthy();
 
-    await userAction(root, user.id, "reset-mfa");
+    // password reset: the next sign-in (forced change of the temporary password) is flagged
+    const r = await userAction(root, user.id, "reset-password");
     const t1 = new Date(Date.now() + 30_000);
-    const enrol = expectStep(await beginPasswordLogin({ upn: user.upn, password: STRONG }, META, t1), "enroll");
-    expectStep(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, t1), META, t1), "done");
+    const ch = expectStep(await beginPasswordLogin({ upn: user.upn, password: r.temporaryPassword! }, META, t1), "change-password");
+    expectStep(await changePasswordStep(ch.challengeToken, STRONG2, META, t1), "done");
     const flagged = await lastLogin(user.id);
     expect(flagged.tenantId).toBe(bank.id);
-    expect(flagged.payload).toMatchObject({ afterReset: true, resetAction: "user.mfa_reset", resetBy: root.upn });
+    expect(flagged.payload).toMatchObject({ afterReset: true, resetAction: "user.password_reset", resetBy: root.upn });
 
+    // later sign-ins are not flagged
     const t2 = new Date(Date.now() + 90_000);
-    const v = expectStep(await beginPasswordLogin({ upn: user.upn, password: STRONG }, META, t2), "verify");
-    expectStep(await verifyTotpStep(v.challengeToken, codeFor(enrol.secret.replace(/\s+/g, ""), t2), META, t2), "done");
+    expectStep(await beginPasswordLogin({ upn: user.upn, password: STRONG2 }, META, t2), "done");
     expect((await lastLogin(user.id)).payload).not.toHaveProperty("afterReset");
-
-    // password reset: flagged on the forced-change path (the logins above used future clocks for TOTP steps)
-    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date(Date.now() - 1000) } });
-    const r = await userAction(root, user.id, "reset-password");
-    const t3 = new Date(Date.now() + 150_000);
-    const v3 = expectStep(await beginPasswordLogin({ upn: user.upn, password: r.temporaryPassword! }, META, t3), "verify");
-    const ch = expectStep(await verifyTotpStep(v3.challengeToken, codeFor(enrol.secret.replace(/\s+/g, ""), t3), META, t3), "change-password");
-    expectStep(await changePasswordStep(ch.challengeToken, STRONG2, META, t3), "done");
-    expect((await lastLogin(user.id)).payload).toMatchObject({ afterReset: true, resetAction: "user.password_reset" });
   });
 });
 

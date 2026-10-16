@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { AuthError, DEV_USER_COOKIE, requireSameOrigin } from "@/lib/auth/session";
 import { logout } from "@/lib/auth/oidc";
 import { endSession } from "@/lib/auth/session-store";
-import { MFA_COOKIE, SESSION_COOKIE } from "@/lib/auth/tokens";
+import { CHALLENGE_COOKIE, SESSION_COOKIE } from "@/lib/auth/tokens";
 import { authMode, env } from "@/lib/env";
 import { describeError } from "@/lib/errors-describe";
 
@@ -31,7 +31,7 @@ export async function POST(req: Request): Promise<Response> {
   // Relative Location: correct behind the reverse proxy whatever internal host the request used.
   const res = new NextResponse(null, { status: 303, headers: { Location: target ?? "/login?signedOut=1", "Cache-Control": "no-store" } });
   res.cookies.delete({ name: SESSION_COOKIE, path: "/" });
-  res.cookies.delete({ name: MFA_COOKIE, path: "/" });
+  res.cookies.delete({ name: CHALLENGE_COOKIE, path: "/" });
   if (mode === "dev") res.cookies.delete({ name: DEV_USER_COOKIE, path: "/" });
   return res;
 }

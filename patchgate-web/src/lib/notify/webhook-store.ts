@@ -2,7 +2,7 @@ import { encryptSecret, needsReencryption, openSecret, type EncKeyring } from "@
 
 /**
  * Webhook URLs at rest (they embed a secret token): sealed with AUTH_ENC_KEY (AES-256-GCM, key id, previous-key
- * decrypt — src/lib/auth/secret-box.ts), the same keyring and rotation CLI as the TOTP secrets.
+ * decrypt — src/lib/auth/secret-box.ts), rotated with scripts/admin/rotate-auth-enc-key.ts.
  *  - NotificationSetting.webhookUrlsEnc: one box per URL, bound to the setting scope (AAD), so a box copied into
  *    another bank's settings does not decrypt.
  *  - Notification.target (channel WEBHOOK): the outbox copy, sealed as well.

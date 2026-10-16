@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { requiredApprovalsOf, transition, windowBypassGranted, type Actor, type CrSnapshot, type PriorApproval } from "./state-machine";
+import { APPROVAL_OFF_REASON, approvalSkipped, requiredApprovalsOf, transition, windowBypassGranted, type Actor, type CrSnapshot, type PriorApproval } from "./state-machine";
 
 const BANK_A = "bank-a";
 const BANK_B = "bank-b";
@@ -226,5 +226,39 @@ describe("approval expiry", () => {
   });
   it("no expiry set = no limit", () => {
     expect(transition(cr({ status: "APPROVED", approvalExpiresAt: null }), "deploy", maker, { now: new Date("2030-01-01") }).ok).toBe(true);
+  });
+});
+
+describe("approval switched OFF for the bank (requireBankApproval = false)", () => {
+  const off = (overrides: Partial<CrSnapshot> = {}) => cr({ requireBankApproval: false, ...overrides });
+  const bankAdmin: Actor = { id: "u-bank-admin", role: "ADMIN", tenantId: BANK_A };
+
+  it("an admin's submit approves the request straight away (no second person)", () => {
+    expect(approvalSkipped(off())).toBe(true);
+    expect(transition(off(), "submit", maker)).toEqual({ ok: true, next: "APPROVED" });
+    expect(transition(off({ createdById: bankAdmin.id }), "submit", bankAdmin)).toEqual({ ok: true, next: "APPROVED" });
+  });
+
+  it("the auto-approved request can then be deployed by its maker", () => {
+    expect(transition(off({ status: "APPROVED" }), "deploy", maker)).toEqual({ ok: true, next: "DEPLOYING" });
+  });
+
+  it("emergency rules apply only while approval is ON: an emergency is auto-approved too (still needs a reason)", () => {
+    expect(transition(off({ emergency: true, emergencyReason: "actively exploited zero-day" }), "submit", maker)).toEqual({ ok: true, next: "APPROVED" });
+    expect(transition(off({ emergency: true, emergencyReason: null }), "submit", maker).ok).toBe(false);
+  });
+
+  it("auditors still cannot submit; empty requests are still refused", () => {
+    expect(transition(off({ createdById: viewer.id }), "submit", viewer).ok).toBe(false);
+    expect(transition(off({ patchCount: 0 }), "submit", maker).ok).toBe(false);
+  });
+
+  it("ON (default): submit only moves to PENDING_APPROVAL", () => {
+    expect(approvalSkipped(cr())).toBe(false);
+    expect(transition(cr(), "submit", maker)).toEqual({ ok: true, next: "PENDING_APPROVAL" });
+  });
+
+  it("records a readable policy reason", () => {
+    expect(APPROVAL_OFF_REASON).toMatch(/approval is off/i);
   });
 });

@@ -1,5 +1,5 @@
 /**
- * Local sign-in (password + TOTP) and user/bank administration against a real PostgreSQL.
+ * Local sign-in (password only) and user/bank administration against a real PostgreSQL.
  * Run: TEST_DATABASE_URL=postgresql://…/patchgate_test_auth npm run test:int -- src/test/auth-local.int.test.ts
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
@@ -8,11 +8,10 @@ import { configureTestEnv, resetDb } from "./helpers";
 configureTestEnv({ AUTH_MODE: "local", AUTH_ENC_KEY: "ab".repeat(32) });
 
 const { prisma } = await import("@/lib/db");
-const { beginPasswordLogin, verifyTotpStep, changePasswordStep, LOGIN_ERROR, CODE_ERROR, RESTART_ERROR } = await import("@/lib/auth/local-login");
+const { beginPasswordLogin, changePasswordStep, LOGIN_ERROR, RESTART_ERROR, MAX_CHALLENGE_ATTEMPTS } = await import("@/lib/auth/local-login");
 const { createUser, updateUser, userAction, createTenant, updateTenant, listUsers, ACCOUNTS_MANAGED_BY_PLATFORM } = await import("@/lib/auth/admin-service");
 const { verifyAuditLog } = await import("@/lib/audit/service");
 const { hashPassword } = await import("@/lib/auth/password");
-const { base32Decode, hotp, totpStep } = await import("@/lib/auth/totp");
 const { sha256Hex } = await import("@/lib/auth/tokens");
 const { AuthError } = await import("@/lib/auth/session");
 const { DomainError } = await import("@/lib/errors");
@@ -22,7 +21,6 @@ type LoginStep = import("@/lib/auth/local-login").LoginStep;
 const META = { ip: "10.0.0.1", userAgent: "vitest" };
 const T0 = new Date("2026-10-15T09:00:00Z");
 const at = (seconds: number) => new Date(T0.getTime() + seconds * 1000);
-const codeFor = (secret: string, when: Date) => hotp(base32Decode(secret), totpStep(when.getTime()));
 const STRONG = "orbit-Kettle-7-sandstone-river";
 
 async function resetAll() {
@@ -53,18 +51,11 @@ async function auditActions(): Promise<string[]> {
   return (await prisma.auditEvent.findMany({ orderBy: { seq: "asc" }, select: { action: true } })).map((e) => e.action);
 }
 
-/** Sign in from scratch for a user who already has TOTP; returns the session token. */
-async function fullLogin(upn: string, password: string, secret: string, when: Date): Promise<string> {
-  const p = expectStep(await beginPasswordLogin({ upn, password }, META, when), "verify");
-  const done = expectStep(await verifyTotpStep(p.challengeToken, codeFor(secret, when), META, when), "done");
-  return done.sessionToken;
-}
-
 beforeEach(resetAll);
 afterAll(() => prisma.$disconnect());
 
 describe("local sign-in", () => {
-  it("temporary password → TOTP enrolment → forced password change → session; then normal sign-in", async () => {
+  it("temporary password → forced password change → session; then normal sign-in (password only)", async () => {
     const root = await platformAdmin();
     const bank = await createTenant(root, { slug: "bank-a", name: "Bank A", active: true, requireBankApproval: true });
     // A new bank can open change requests immediately: standard rollout rings exist.
@@ -77,17 +68,9 @@ describe("local sign-in", () => {
     expect(stored.passwordHash).toMatch(/^scrypt\$/);
     expect(stored.passwordHash).not.toContain(temporaryPassword);
 
-    const enrol = expectStep(await beginPasswordLogin({ upn: "alice@bank-a.test", password: temporaryPassword, returnTo: "/change-requests" }, META, T0), "enroll");
-    expect(enrol.otpauthUri).toMatch(/^otpauth:\/\/totp\/PatchGate:alice%40bank-a\.test\?secret=/);
-    expect(enrol.qrSvgDataUrl).toMatch(/^data:image\/svg\+xml;base64,/);
-    const pending = await prisma.authChallenge.findUniqueOrThrow({ where: { id: sha256Hex(enrol.challengeToken) } });
-    expect(pending.kind).toBe("ENROLL");
-    expect(pending.pendingSecretEnc).toMatch(/^v1\./);
-    expect(pending.pendingSecretEnc).not.toContain(enrol.secret.replace(/ /g, ""));
-
-    const change = expectStep(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, T0), META, T0), "change-password");
-    // The enrolment challenge is single use.
-    expect((await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, at(30)), META, at(30))).ok).toBe(false);
+    const change = expectStep(await beginPasswordLogin({ upn: "alice@bank-a.test", password: temporaryPassword, returnTo: "/change-requests" }, META, T0), "change-password");
+    const pending = await prisma.authChallenge.findUniqueOrThrow({ where: { id: sha256Hex(change.challengeToken) } });
+    expect(pending.kind).toBe("PASSWORD");
     expect(await prisma.session.count()).toBe(0); // no session before the password is changed
 
     const weak = await changePasswordStep(change.challengeToken, "short", META, T0);
@@ -101,32 +84,20 @@ describe("local sign-in", () => {
     expect(session.userId).toBe(user.id);
     expect(session.expiresAt.getTime() - T0.getTime()).toBe(8 * 3_600_000);
     const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(after).toMatchObject({ mustChangePassword: false, totpEnabled: true, failedLogins: 0 });
+    expect(after).toMatchObject({ mustChangePassword: false, failedLogins: 0 });
     expect(await prisma.authChallenge.count()).toBe(0);
+    // The password-change challenge is single use.
+    expect(await changePasswordStep(change.challengeToken, "another-Strong-9-passphrase", META, at(10))).toMatchObject({ ok: false, restart: true });
 
-    // Old temporary password no longer works; the new one + TOTP does.
+    // Old temporary password no longer works; the new one signs in directly.
     expect(await beginPasswordLogin({ upn: "alice@bank-a.test", password: temporaryPassword }, META, at(60))).toMatchObject({ ok: false, error: LOGIN_ERROR });
-    await fullLogin("alice@bank-a.test", STRONG, enrol.secret, at(90));
+    expectStep(await beginPasswordLogin({ upn: "alice@bank-a.test", password: STRONG }, META, at(90)), "done");
 
     const actions = await auditActions();
-    for (const a of ["tenant.created", "user.created", "auth.mfa_enrolled", "auth.password_changed", "auth.login", "auth.failed"]) expect(actions).toContain(a);
+    for (const a of ["tenant.created", "user.created", "auth.password_changed", "auth.login", "auth.failed"]) expect(actions).toContain(a);
     const loginEvent = await prisma.auditEvent.findFirstOrThrow({ where: { action: "auth.login" } });
     expect(loginEvent.tenantId).toBe(bank.id); // bank user → bank's audit chain
-  });
-
-  it("rejects a replayed TOTP code (each 30-s step is usable once)", async () => {
-    const root = await platformAdmin();
-    const { user, temporaryPassword } = await createUser(root, { upn: "bob@platform.test", name: "Bob", role: "ADMIN", tenantId: null });
-    const enrol = expectStep(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, T0), "enroll");
-    const change = expectStep(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, T0), META, T0), "change-password");
-    expectStep(await changePasswordStep(change.challengeToken, STRONG, META, T0), "done");
-
-    // Same code, a few seconds later, in a fresh sign-in: refused.
-    const again = expectStep(await beginPasswordLogin({ upn: user.upn, password: STRONG }, META, at(5)), "verify");
-    expect(await verifyTotpStep(again.challengeToken, codeFor(enrol.secret, T0), META, at(5))).toMatchObject({ ok: false, error: CODE_ERROR });
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).failedLogins).toBe(1);
-    // The next step's code is accepted.
-    expectStep(await verifyTotpStep(again.challengeToken, codeFor(enrol.secret, at(30)), META, at(30)), "done");
+    expect(loginEvent.payload).toMatchObject({ method: "password" });
   });
 
   it("uses one generic message for unknown users, wrong passwords and deactivated accounts", async () => {
@@ -148,30 +119,28 @@ describe("local sign-in", () => {
     expect(locked.lockedUntil?.getTime()).toBe(at(4).getTime() + 15 * 60_000);
     expect(await auditActions()).toContain("auth.lockout");
 
-    // Correct password while locked: same generic refusal, no challenge issued.
+    // Correct password while locked: same generic refusal, no session.
     expect(await beginPasswordLogin({ upn: root.upn, password: STRONG }, META, at(60))).toMatchObject({ ok: false, error: LOGIN_ERROR });
-    expect(await prisma.authChallenge.count()).toBe(0);
-    // After the lock expires, sign-in proceeds to the second factor.
-    expectStep(await beginPasswordLogin({ upn: root.upn, password: STRONG }, META, at(16 * 60)), "enroll");
+    expect(await prisma.session.count()).toBe(0);
+    // After the lock expires, the password alone signs in.
+    expectStep(await beginPasswordLogin({ upn: root.upn, password: STRONG }, META, at(16 * 60)), "done");
   });
 
-  it("wrong TOTP codes burn the challenge after 5 attempts and count towards lockout", async () => {
+  it("bad new passwords burn the password-change challenge after the attempt limit", async () => {
     const root = await platformAdmin();
-    const enrol = expectStep(await beginPasswordLogin({ upn: root.upn, password: STRONG }, META, T0), "enroll");
-    const good = codeFor(enrol.secret, T0);
-    const bad = good === "000000" ? "111111" : "000000";
-    for (let i = 0; i < 4; i++) expect(await verifyTotpStep(enrol.challengeToken, bad, META, T0)).toMatchObject({ ok: false, error: CODE_ERROR });
-    expect(await verifyTotpStep(enrol.challengeToken, bad, META, T0)).toMatchObject({ ok: false, error: RESTART_ERROR, restart: true });
-    expect(await verifyTotpStep(enrol.challengeToken, good, META, T0)).toMatchObject({ ok: false, restart: true });
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: root.id } })).lockedUntil).not.toBeNull();
+    const { user, temporaryPassword } = await createUser(root, { upn: "frank@platform.test", name: "Frank", role: "AUDITOR", tenantId: null });
+    const change = expectStep(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, T0), "change-password");
+    for (let i = 0; i < MAX_CHALLENGE_ATTEMPTS - 1; i++) expect(await changePasswordStep(change.challengeToken, "short", META, T0)).toMatchObject({ ok: false, restart: false });
+    expect(await changePasswordStep(change.challengeToken, "short", META, T0)).toMatchObject({ ok: false, error: RESTART_ERROR, restart: true });
+    expect(await changePasswordStep(change.challengeToken, STRONG, META, T0)).toMatchObject({ ok: false, restart: true });
   });
 
   it("expired challenges and deactivated banks stop the sign-in", async () => {
     const root = await platformAdmin();
     const bank = await createTenant(root, { slug: "bank-b", name: "Bank B", active: true, requireBankApproval: true });
     const { user, temporaryPassword } = await createUser(root, { upn: "dave@bank-b.test", name: "Dave", role: "AUDITOR", tenantId: bank.id });
-    const enrol = expectStep(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, T0), "enroll");
-    expect(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, at(301)), META, at(301))).toMatchObject({ ok: false, restart: true });
+    const change = expectStep(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, T0), "change-password");
+    expect(await changePasswordStep(change.challengeToken, STRONG, META, at(301))).toMatchObject({ ok: false, restart: true });
 
     await updateTenant(root, bank.id, { active: false });
     expect(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, at(400))).toMatchObject({ ok: false, error: LOGIN_ERROR });
@@ -206,7 +175,7 @@ describe("user administration", () => {
         for (const change of [{ name: "Renamed" }, { role: "ADMIN" as const }, { role: "AUDITOR" as const }, { active: false }, { active: true }]) {
           await expect(updateUser(actor, target, change)).rejects.toMatchObject({ status: 403 });
         }
-        for (const action of ["reset-password", "reset-mfa", "unlock"] as const) {
+        for (const action of ["reset-password", "unlock"] as const) {
           await expect(userAction(actor, target, action)).rejects.toMatchObject({ status: 403, message: ACCOUNTS_MANAGED_BY_PLATFORM });
         }
       }
@@ -235,13 +204,12 @@ describe("user administration", () => {
     expect(await prisma.user.findUniqueOrThrow({ where: { id: bankAdmin.id } })).toMatchObject({ lockedUntil: null, failedLogins: 0 });
     const reset = await userAction(root, bankAdmin.id, "reset-password");
     expect(reset.temporaryPassword).toMatch(/^[A-Za-z2-9]{5}(-[A-Za-z2-9]{5}){3}$/);
-    await userAction(root, bankAdmin.id, "reset-mfa");
     await updateUser(root, bankAdmin.id, { active: false });
     await updateUser(root, bankAdmin.id, { active: true });
 
     const events = await prisma.auditEvent.findMany({ where: { entity: "User", entityId: { in: [bankAdmin.id, created.user.id] } }, orderBy: { seq: "asc" } });
     expect(events.map((e) => e.action)).toEqual(
-      expect.arrayContaining(["user.created", "user.updated", "user.unlocked", "user.password_reset", "user.mfa_reset", "user.deactivated", "user.reactivated"]),
+      expect.arrayContaining(["user.created", "user.updated", "user.unlocked", "user.password_reset", "user.deactivated", "user.reactivated"]),
     );
     expect(events.every((e) => e.tenantId === a.id && e.actor === root.upn)).toBe(true);
     expect((await verifyAuditLog(a.id)).valid).toBe(true);
@@ -261,22 +229,21 @@ describe("user administration", () => {
     expect(await prisma.user.count({ where: { role: "ADMIN", tenantId: null, active: true } })).toBe(1);
   });
 
-  it("deactivation kills sessions; MFA reset forces re-enrolment", async () => {
+  it("password reset and deactivation kill sessions", async () => {
     const root = await platformAdmin();
     const { user, temporaryPassword } = await createUser(root, { upn: "erin@platform.test", name: "Erin", role: "ADMIN", tenantId: null });
-    const enrol = expectStep(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, T0), "enroll");
-    const change = expectStep(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, T0), META, T0), "change-password");
+    const change = expectStep(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, T0), "change-password");
     expectStep(await changePasswordStep(change.challengeToken, STRONG, META, T0), "done");
     expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
 
-    await userAction(root, user.id, "reset-mfa");
+    await userAction(root, user.id, "reset-password");
     expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
-    expectStep(await beginPasswordLogin({ upn: user.upn, password: STRONG }, META, at(60)), "enroll");
+    expect(await beginPasswordLogin({ upn: user.upn, password: STRONG }, META, at(60))).toMatchObject({ ok: false, error: LOGIN_ERROR });
 
     await updateUser(root, user.id, { active: false });
     expect(await prisma.authChallenge.count({ where: { userId: user.id } })).toBe(0);
     const actions = await auditActions();
-    expect(actions).toContain("user.mfa_reset");
+    expect(actions).toContain("user.password_reset");
     expect(actions).toContain("user.deactivated");
   });
 

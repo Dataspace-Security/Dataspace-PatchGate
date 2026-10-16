@@ -153,7 +153,7 @@ export async function main(argv: string[]): Promise<number> {
     if (parsed.generate) {
       out(`Temporary password (shown once, must be changed at first sign-in): ${password}`);
     }
-    out("At first sign-in the user sets up an authenticator app (TOTP) — two-factor sign-in is mandatory.");
+    out("Local sign-in is password-only: username + password (banks that need MFA use their SSO).");
     return 0;
   } finally {
     await prisma.$disconnect();

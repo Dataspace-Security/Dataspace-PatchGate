@@ -104,7 +104,7 @@ async function planRemaining(tx: Tx, d: DeploymentRow, ctx: AdvanceCtx, done: Re
     return await planEndpointSteps(tx, d.tenantId, d.changeRequest, d.endpoint, ctx.sizer, done);
   } catch (err: unknown) {
     if (err instanceof WindowsUpdatesNotReadyError) {
-      await park(tx, d, ctx, WAIT_RETRY_MS, `${WAITING_NOTE_PREFIX}Windows update files: ${err.message}`);
+      await park(tx, d, ctx, WAIT_RETRY_MS, `${WAITING_NOTE_PREFIX}Windows update files: ${err.reason}`);
       return "waiting-cache";
     }
     await finish(tx, d.tenantId, d.id, d.status, "FAILED", err instanceof Error ? err.message : "planning failed", { kind: "PLANNING", audits: ctx.audits });

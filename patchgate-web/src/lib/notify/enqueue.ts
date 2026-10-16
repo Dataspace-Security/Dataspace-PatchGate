@@ -21,7 +21,7 @@ import { optionalAuthKeyring } from "@/lib/auth/enc-keys";
  */
 
 type CrEvent = "CR_SUBMITTED" | "CR_APPROVED" | "CR_REJECTED";
-type AccountEvent = "ACCOUNT_LOCKED" | "PASSWORD_RESET" | "MFA_RESET";
+type AccountEvent = "ACCOUNT_LOCKED" | "PASSWORD_RESET";
 
 export type NotifyInput =
   | { event: CrEvent; tenantId: string; crId: string; actor?: { id: string; upn: string } | null; reason?: string | null }
@@ -30,9 +30,12 @@ export type NotifyInput =
   | { event: "CR_DEADLINE"; tenantId: string; crId: string; deadline: Date; timedOut: number }
   | { event: "CONNECTOR_OFFLINE"; tenantId: string; connectorId: string; lastSeenAt: Date | null }
   | { event: "CONNECTOR_ONLINE"; tenantId: string; connectorId: string; offlineMinutes: number }
+  | { event: "WU_LOCK_BROKEN"; tenantId: string; connectorId: string; endpoints: { hostname: string; issues: string[] }[] }
   | { event: "PACKAGE_HELD"; appVersionId: string }
   | { event: "AUDIT_CHAIN_BROKEN"; chain: string; chainTenantId: string | null; problem: string | null }
   | { event: "SIEM_EXPORT_STALE"; chain: string; chainTenantId: string | null; pending: number; minutesSinceExport: number | null }
+  | { event: "TACTICAL_OUT_OF_BAND"; tenantId: string; connectorId: string; count: number; summary: string }
+  | { event: "APPROVAL_SETTING_CHANGED"; tenantId: string; approvalRequired: boolean; actor: string }
   | { event: AccountEvent; userId: string; actor?: string | null; until?: Date | null };
 
 interface Prepared {
@@ -141,6 +144,22 @@ async function prepare(tx: Tx, input: NotifyInput): Promise<Prepared | null> {
         spec: { bankRoles: ["ADMIN"], platformRoles: ["ADMIN"], webhooks: { bank: true, platform: true } },
       };
     }
+    case "WU_LOCK_BROKEN": {
+      if (input.endpoints.length === 0) return null;
+      const c = await tx.connector.findFirst({ where: { id: input.connectorId, tenantId: input.tenantId }, select: { name: true } });
+      const shown = input.endpoints.slice(0, 10);
+      return {
+        tenantId: input.tenantId,
+        facts: {
+          bankName: await bankName(tx, input.tenantId),
+          connectorName: c?.name,
+          endpointCount: input.endpoints.length,
+          hostnames: shown.map((e) => e.hostname).join(", ") + (input.endpoints.length > shown.length ? ` (+${input.endpoints.length - shown.length} more)` : ""),
+          issues: [...new Set(input.endpoints.flatMap((e) => e.issues))].slice(0, 5).join("; ") || null,
+        },
+        spec: { bankRoles: ["ADMIN"], platformRoles: ["ADMIN"], webhooks: { bank: true, platform: true } },
+      };
+    }
     case "PACKAGE_HELD": {
       const v = await tx.appVersion.findUnique({
         where: { id: input.appVersionId },
@@ -165,9 +184,25 @@ async function prepare(tx: Tx, input: NotifyInput): Promise<Prepared | null> {
         spec: { platformRoles: ["ADMIN"], webhooks: { bank: false, platform: true } },
       };
     }
+    case "TACTICAL_OUT_OF_BAND": {
+      const c = await tx.connector.findFirst({ where: { id: input.connectorId, tenantId: input.tenantId }, select: { name: true } });
+      if (!c) return null;
+      return {
+        tenantId: input.tenantId,
+        facts: { bankName: await bankName(tx, input.tenantId), connectorId: input.connectorId, connectorName: c.name, total: input.count, problem: input.summary },
+        // Platform admins + the bank's admins; both scopes' webhooks (the bank's SIEM also gets the audit events).
+        spec: { bankRoles: ["ADMIN"], platformRoles: ["ADMIN"], webhooks: { bank: true, platform: true } },
+      };
+    }
+    case "APPROVAL_SETTING_CHANGED":
+      return {
+        tenantId: input.tenantId,
+        facts: { bankName: await bankName(tx, input.tenantId), status: input.approvalRequired ? "ON" : "OFF", actor: input.actor },
+        // The bank's admins (they are the makers / checkers) + platform admins; both scopes' webhooks.
+        spec: { bankRoles: ["ADMIN"], platformRoles: ["ADMIN"], webhooks: { bank: true, platform: true } },
+      };
     case "ACCOUNT_LOCKED":
-    case "PASSWORD_RESET":
-    case "MFA_RESET": {
+    case "PASSWORD_RESET": {
       const u = await tx.user.findUnique({ where: { id: input.userId }, select: { name: true, tenantId: true } });
       if (!u) return null;
       return {

@@ -9,6 +9,10 @@ import { REBOOT_LABEL } from "@/lib/policies/reboot-labels";
 import { ActionButton } from "@/components/action-button";
 import { canWrite } from "@/lib/auth/roles";
 import { Alert, Badge, Card, EmptyState, Loading, fmtDate, rowCls, tableCls, theadCls } from "@/components/ui";
+import { ApprovalOffNote } from "@/components/approval-off-note";
+import { DeploymentProgress } from "@/components/deployment-progress";
+import { LiveRefresh } from "@/components/live-refresh";
+import { STAGE_LABEL, deploymentStage, rolloutProgress } from "@/lib/deploy/progress";
 import { EmergencyBadge } from "../emergency-badge";
 import { DraftOptions } from "./draft-options";
 
@@ -64,7 +68,7 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
         approvedBy: { select: { name: true, upn: true } },
         approvals: { orderBy: { createdAt: "asc" } },
         patches: { include: { patch: true } },
-        deployments: { include: { endpoint: { select: { hostname: true, site: true } } }, orderBy: { status: "asc" } },
+        deployments: { include: { endpoint: { select: { hostname: true, site: true, rebootRequired: true } } }, orderBy: { status: "asc" } },
       },
     });
     if (!cr) return null;
@@ -79,10 +83,24 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
       orderBy: { seq: "asc" },
       take: 200,
     });
-    return { cr, audit };
+    // Active connector job per deployment (stage of the progress bar: caching / installing).
+    const activeJobs =
+      cr.status === "DEPLOYING"
+        ? await tx.connectorJob.findMany({
+            where: { tenantId, changeRequestId: id, status: { in: ["QUEUED", "DELIVERED"] }, deploymentId: { not: null } },
+            select: { deploymentId: true, type: true },
+          })
+        : [];
+    return { cr, audit, activeJobs };
   });
   if (!data) notFound();
-  const { cr, audit } = data;
+  const { cr, audit, activeJobs } = data;
+  const jobOf = new Map(activeJobs.map((j) => [j.deploymentId, j.type]));
+  const rows = cr.deployments.map((d) => ({
+    ...d,
+    stage: deploymentStage({ status: d.status, note: d.note, activeJobType: jobOf.get(d.id) ?? null, rebootRequired: d.endpoint.rebootRequired }),
+  }));
+  const progress = rolloutProgress(rows.map((d) => ({ status: d.status, note: d.note, activeJobType: jobOf.get(d.id) ?? null, rebootRequired: d.endpoint.rebootRequired })));
 
   const snapshot = {
     status: cr.status,
@@ -124,7 +142,9 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
         ]
       : a.action === "deploy"
         ? [{ ...a, confirm: `Queue deployment to the approved endpoints${targetsText}?` }]
-        : [a],
+        : a.action === "submit" && !tenant.requireBankApproval
+          ? [{ ...a, label: "Submit (approval is off)", confirm: "Approval is OFF for this bank: submitting approves this request right away (no second person). This is recorded in the audit log. Submit?" }]
+          : [a],
   );
   const canEditDraft = cr.status === "DRAFT" && cr.createdById === user.id && canWrite(user);
   const counts = cr.deployments.reduce<Record<string, number>>((acc, d) => ({ ...acc, [d.status]: (acc[d.status] ?? 0) + 1 }), {});
@@ -133,6 +153,10 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
 
   return (
     <div className="space-y-6">
+      <div className="flex justify-end">
+        <LiveRefresh active={deploying} />
+      </div>
+      <ApprovalOffNote approvalRequired={tenant.requireBankApproval} />
       <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-5">
         <div>
           <h1 className="flex flex-wrap items-center gap-3 text-2xl font-semibold tracking-tight text-fg">
@@ -155,17 +179,21 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
 
       <Card
         title="Approval"
-        description={`Maker and checker must be different people (enforced server-side).${tenant.requireBankApproval ? ` The checker must be an admin of ${tenant.name}.` : ""} The request deploys only to the endpoints in its ring when it was submitted; changing the targets needs a new request and approval.`}
+        description={`${tenant.requireBankApproval ? `Maker and checker must be different people (enforced server-side). The checker must be an admin of ${tenant.name}.` : `Approval is OFF for ${tenant.name}: an admin's request is approved on submit, without a second person.`} The request deploys only to the endpoints in its ring when it was submitted; changing the targets needs a new request and approval.`}
       >
         <ol className="flex flex-col gap-4 sm:flex-row sm:gap-6">
           <Step done title="Created (maker)" who={cr.createdBy.name} when={cr.createdAt} />
           <Step done={cr.submittedAt !== null} title="Submitted" who={cr.createdBy.name} when={cr.submittedAt} />
-          <Step
-            done={cr.approvedById !== null}
-            title={required > 1 ? `Approved (${Math.min(round.length, required)} of ${required} checkers)` : "Approved (checker)"}
-            who={round.length > 0 ? round.map((a) => a.userName).join(", ") : cr.approvedBy?.name}
-            when={cr.decidedAt}
-          />
+          {cr.autoApproved ? (
+            <Step done title="Auto-approved (approval off)" who="no second person — bank policy" when={cr.decidedAt} />
+          ) : (
+            <Step
+              done={cr.approvedById !== null}
+              title={required > 1 ? `Approved (${Math.min(round.length, required)} of ${required} checkers)` : "Approved (checker)"}
+              who={round.length > 0 ? round.map((a) => a.userName).join(", ") : cr.approvedBy?.name}
+              when={cr.decidedAt}
+            />
+          )}
           <Step
             done={deployed}
             active={deploying}
@@ -258,6 +286,11 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
         }
         padded={cr.deployments.length === 0}
       >
+        {progress.total > 0 && (
+          <div className="border-b border-border px-5 py-4">
+            <DeploymentProgress progress={progress} />
+          </div>
+        )}
         {cr.deployments.length === 0 ? (
           <EmptyState title="Not deployed yet">Deployments appear here once an approved request is queued.</EmptyState>
         ) : (
@@ -266,13 +299,16 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
               <tr><th>Endpoint</th><th>Branch</th><th>Status</th><th className="text-right">Attempts</th><th>Note / error</th><th>Finished</th></tr>
             </thead>
             <tbody>
-              {cr.deployments.map((d) => (
+              {rows.map((d) => (
                 <tr key={d.id} className={rowCls}>
                   <td className="whitespace-nowrap font-medium">{d.endpoint.hostname}</td>
                   <td className="whitespace-nowrap text-muted">{d.endpoint.site ?? "—"}</td>
-                  <td><Badge>{d.status}</Badge></td>
+                  <td>
+                    <Badge>{d.status}</Badge>
+                    <div className="mt-1 whitespace-nowrap text-xs text-muted" data-testid="deployment-stage">{STAGE_LABEL[d.stage]}</div>
+                  </td>
                   <td className="text-right tabular-nums">{d.attempts}</td>
-                  <td className={`max-w-md text-xs ${d.error ? "text-danger" : "text-muted"}`}>{d.error ?? d.note ?? ""}</td>
+                  <td className={`max-w-md text-xs ${d.error ? "text-danger" : "text-muted"}`}>{d.error ?? d.note ?? (d.status === "QUEUED" ? "queued: picked up by the next deployment run" : "")}</td>
                   <td className="whitespace-nowrap text-xs text-muted">{fmtDate(d.finishedAt)}</td>
                 </tr>
               ))}

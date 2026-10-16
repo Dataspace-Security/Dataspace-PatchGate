@@ -83,6 +83,8 @@ async function seed() {
   const patch = await prisma.patch.create({
     data: { kind: "WINDOWS", externalId: "22222222-2222-2222-2222-222222222222", kb: "KB2", title: "KB2", severity: "CRITICAL" },
   });
+  // Reported by a PatchGate offline scan (bank B gets Windows updates only through PatchGate).
+  await prisma.winUpdate.createMany({ data: [{ id: patch.externalId, revision: 0, title: "KB2" }], skipDuplicates: true });
   const bank = async (tenantId: string, tag: string) => {
     const ring = await prisma.ring.create({ data: { tenantId, name: "Ring0", wsusGroup: "Ring0", order: 0 } });
     const endpoint = await prisma.endpoint.create({ data: { tenantId, tacticalAgentId: `agent${tag}000001`, hostname: `${tag}-PC1`, ringId: ring.id } });
@@ -314,11 +316,21 @@ describe("per-bank maker-checker policy", () => {
     expect(ev.tenantId).toBe(TENANT_A);
   });
 
-  it("bank approval cannot be switched off: our team can never be the only checker", async () => {
+  it("approval ON (default): our team can never be the only checker", async () => {
     const { users, a } = await seed();
-    await expect(prisma.tenant.update({ where: { id: TENANT_A }, data: { requireBankApproval: false } })).rejects.toThrow(/Tenant_requireBankApproval_always|check constraint/i);
-    await expect(applyAction(users.platformAdmin, TENANT_A, a.cr.id, "approve")).rejects.toThrow();
-    expect((await prisma.changeRequest.findUniqueOrThrow({ where: { id: a.cr.id } })).status).not.toBe("APPROVED");
+    await expect(applyAction(users.platformAdmin, TENANT_A, a.cr.id, "approve")).rejects.toThrow(/bank approval required/i);
+    expect((await prisma.changeRequest.findUniqueOrThrow({ where: { id: a.cr.id } })).status).toBe("PENDING_APPROVAL");
+  });
+
+  it("approval OFF (allowed since migration 20261016173000): a new request is auto-approved on submit, for that bank only", async () => {
+    const { users, a, b } = await seed();
+    await prisma.tenant.update({ where: { id: TENANT_A }, data: { requireBankApproval: false } }); // the always-on CHECK is gone
+    const cr = await createChangeRequest(users.platformOperator, TENANT_A, { title: "CR A2", ringId: a.ring.id, patchIds: [(await prisma.patch.findFirstOrThrow()).id] });
+    expect(await applyAction(users.platformOperator, TENANT_A, cr.id, "submit")).toMatchObject({ status: "APPROVED", autoApproved: true });
+    const ev = await prisma.auditEvent.findFirstOrThrow({ where: { action: "change_request.approval_skipped", entityId: cr.id } });
+    expect(ev.tenantId).toBe(TENANT_A); // on bank A's chain
+    // Bank B (approval still ON) is unaffected.
+    expect((await prisma.changeRequest.findUniqueOrThrow({ where: { id: b.cr.id } })).status).toBe("PENDING_APPROVAL");
   });
 
   it("services refuse a bank user acting for another bank even if called directly", async () => {

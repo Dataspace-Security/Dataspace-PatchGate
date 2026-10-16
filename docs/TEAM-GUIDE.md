@@ -31,8 +31,8 @@ It asks for: the domain, the first admin's e-mail and name, the TLS certificate 
 a test), and where the images come from (registry + version, or build from source). Everything else is automatic:
 Docker, secrets, configuration, database, start, health check, first admin, smoke test.
 
-At the end it shows the **temporary admin password once** (it is not in the log). Sign in, set a new password and
-set up the authenticator app.
+At the end it shows the **temporary admin password once** (it is not in the log). Sign in and set a new password (sign-in is
+password-only).
 
 > Screenshot placeholder: `docs/img/step1-summary.png` (installer summary)
 
@@ -79,14 +79,29 @@ Copy `/opt/patchgate-site/pc/` from the site VM to a read-only share, then on ea
 powershell -ExecutionPolicy Bypass -File \\fs01\patchgate$\Install-PatchGateAgent.ps1 -ConfigFile \\fs01\patchgate$\patchgate-pc.json
 ```
 
-It trusts the bank CA, takes the agent from the site cache (or the copy in the folder), checks its SHA-256,
-installs it, connects it to the site's Tactical and checks the service runs. Already installed → it does nothing.
+Or simply double-click `Install-PatchGateAgent.cmd` in that folder (it asks for administrator rights and uses the
+`patchgate-pc.json` next to it). It trusts the bank CA, adds hosts entries only for site names the bank's DNS does
+not resolve (`siteIp` / `hostNames` in the JSON), checks the PC reaches the site's Tactical and package cache,
+takes the agent from the site cache (or the copy in the folder), checks its SHA-256,
+installs it, connects it to the site's Tactical and checks the service runs, then prints
+`OK - PC enrolled, will appear in PatchGate within minutes` (or `FAILED - <reason>`). Already installed → it only
+re-applies the Windows Update lock.
 
 **Many PCs:** use it as a GPO computer startup script (same command; give "Domain Computers" read access to the
 share). The install token in `patchgate-pc.json` expires (default 72 h): renew with
 `sudo /opt/patchgate-site/runtime/install-site.sh --pc-token 720` and copy the file again.
 
 > Screenshot placeholder: `docs/img/step3-gpo.png`
+
+**PatchGate locks Windows Update on bank PCs.** The same script (at every run, also when the agent is already
+installed) sets the Windows Update group policies so the PC never takes updates from Microsoft by itself: not
+Windows' automatic updates, not "Check for updates", and not Tactical's own "Run Update Scan" / "Install
+Approved Updates" (Windows Update points to a server that does not exist). Updates come only through PatchGate:
+the offline scan with Microsoft's signed `wsusscn2.cab` and the approved update files from the site cache.
+Defender virus definitions still update directly from Microsoft (signature data only, so protection stays
+current); a bank that wants no internet traffic from PCs at all adds `-BlockDefenderDefinitionUpdates`. Every offline scan checks the lock; the Endpoints page shows **locked** / **NOT locked**
+per PC and bank + platform admins get a "Windows Update NOT locked" notification when a PC loses it. Banks that
+prefer GPO set the same values (RUNBOOK §6.2).
 
 ## Who does what (roles)
 
@@ -98,7 +113,7 @@ Two roles, the same for our team and inside every bank:
 | **Auditor** (`AUDITOR`) | read-only across every bank: banks, users, endpoints, patches, change requests, connectors, audit chains (incl. per-bank), reports/exports, operations | read-only within its bank: the same pages for its own bank |
 
 **Accounts are ours.** Only a platform admin (our team) creates or changes user accounts — for our team and for
-every bank: new users, name / role changes, deactivation, password or authenticator reset, unlock. Bank admins and
+every bank: new users, name / role changes, deactivation, password reset, unlock. Bank admins and
 bank auditors can only *see* their bank's user list; when a bank needs a new user, a leaver removed or a reset, it
 asks its PatchGate administrator. (This keeps maker ≠ checker real: a bank admin cannot create a second admin
 account for themselves.)
@@ -106,14 +121,24 @@ account for themselves.)
 The normal flow is short: **pick patches → create the request → a bank admin approves → deploy.** Rings,
 maintenance windows, emergency changes, notification rules and the approval policy are under **Advanced
 settings** (sidebar) and the change request's **Advanced options**; the defaults work out of the box.
-A request is never approved by the person who raised it, and always by an admin of the bank itself.
+A request is never approved by the person who raised it, and (with approval ON, the default) always by an admin
+of the bank itself. An admin can switch **Approval required** off for a bank (Advanced settings → Approval
+policy): then a request is approved when it is submitted and can be deployed without a second person; the
+dashboard and change-request pages show an amber "Approval is OFF" note, the switch is in the audit log and
+every admin gets a notice. Keep it ON in production.
+
+While a page is open it refreshes itself (top right: "Live · updated Xs ago" — every 5 s while something is
+running, every 30 s otherwise, paused in a background tab). The change request shows a progress bar of the
+rollout (finished %, succeeded / failed / in progress / queued) and each PC's stage: queued → files downloading /
+verifying → caching at site → installing → reboot pending → succeeded / failed. The Endpoints page shows when
+Tactical last saw each PC and when it booted ("unknown" when the PC clock is wrong, never a negative time).
 
 ## How to check it worked
 
 | Step | Check | Good result |
 |---|---|---|
 | 1 | `sudo installers/server/install-patchgate.sh --status` | every service `healthy`; `/api/health -> 200` |
-| 1 | sign in at `https://<domain>` | password change + authenticator set-up (unless `AUTH_MFA=off`), then the dashboard |
+| 1 | sign in at `https://<domain>` | password change (first sign-in), then the dashboard |
 | 2 | `sudo /opt/patchgate-site/runtime/install-site.sh --status` | connector `check` ends with `{"healthy":true}` |
 | 2 | PatchGate → Connectors | the site is **online** (last seen < 1 min) |
 | 3 | on the PC: `Get-Service tacticalrmm` | `Running`; log `C:\ProgramData\PatchGate\agent-install.log` ends with `done` |
@@ -151,3 +176,28 @@ Re-running any installer is safe: it keeps existing data, keys and settings. Log
 - Onboarding a bank, enrolment and fingerprints: [RUNBOOK.md §6](RUNBOOK.md#6-onboarding-a-bank-and-enrolling-connectors-high-level)
 - Go-live order: [GO-LIVE-CHECKLIST.md](GO-LIVE-CHECKLIST.md) · Architecture: [ARCHITECTURE-HOSTED.md](ARCHITECTURE-HOSTED.md)
 - Connector settings: `patchgate-connector/README.md` · One-line site install design: `installers/site/web-install.md`
+
+## Tactical is sealed (short)
+
+Nobody at the bank patches or installs through Tactical by hand. The site installer blocks the Tactical
+dashboard login for every user (only PatchGate's service account works, via its API key) and sets every patch
+policy to manual. `tacticaladmin` is a **break-glass** account for emergencies only:
+`sudo /opt/patchgate-site/runtime/install-site.sh --break-glass on` … `--break-glass off`. Everything done in
+Tactical outside PatchGate (logins, scripts, commands, approvals, setting changes) appears within about a
+minute under **Connectors → Tactical activity** with a red badge, is sent to the bank's SIEM and e-mailed to
+platform and bank admins (one alert per burst); update approvals PatchGate did not set are **reset automatically
+within ~30 seconds** by the connector on the site ("Approval of KB… on DESKTOP-… reset automatically at
+hh:mm:ss UTC"). An ADMIN acknowledges each
+case. Root on the site VM can still bypass it — keep that access with named bank admins (RUNBOOK §13).
+
+**PCs appear / scan now:** Endpoints → **Sync agents now** pulls new PCs from Tactical at once (otherwise every
+15 minutes, `AGENT_SYNC_MINUTES`); **Request scan of all PCs** syncs first, then scans every PC and — when
+Windows updates come through PatchGate — runs the offline Windows Update scan as soon as the Microsoft scan
+catalog is verified and cached at the site.
+
+## All-in-one bank server (short)
+
+One bank, everything on one server inside the bank (PatchGate + Tactical + connector + cache), one link:
+`curl -fsSL https://raw.githubusercontent.com/Dataspace-Security/Dataspace-PatchGate/main/installers/bank/install.sh | sudo bash -s -- --domain bank.local`.
+Only PatchGate's fetcher reaches the internet; logins end up in `/opt/patchgate-bank/logins.txt` (root, 600);
+PCs: copy `/opt/patchgate-site/pc/` and double-click `Install-PatchGateAgent.cmd`. Details: [BANK-INSTALL.md](BANK-INSTALL.md).

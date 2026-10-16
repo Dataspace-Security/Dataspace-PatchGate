@@ -24,6 +24,9 @@ export const agentSchema = z.object({
   plat: z.string(),
   operating_system: z.string().nullish(),
   status: z.string().nullish(),
+  // Narrowed / normalised by lib/tactical/agent-times.ts (never fail the agent list on a surprising type).
+  last_seen: z.unknown().optional(),
+  boot_time: z.unknown().optional(),
 });
 export type TacticalAgent = z.infer<typeof agentSchema>;
 

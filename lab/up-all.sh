@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bring up the whole hosted lab (docs/ARCHITECTURE-HOSTED.md §6 phase 4) and prove its network shape.
-#   our server : PatchGate  https://patchgate.<domain>:3443 (local login; password only: AUTH_MFA=off) + scheduler   [this PC]
+#   our server : PatchGate  https://patchgate.<domain>:3443 (local login; password only) + scheduler   [this PC]
 #   Bank A     : Tactical RMM (Docker, internal networks) + PatchGate Connector (Docker, egress = PatchGate only)
 #                package cache https://pg-cache.<domain>:8443 (via trmm-lab-ingress) · bank SIEM tls://siem.<domain>:6514
 # Safe to re-run: running pieces are kept, missing ones are started. Stop: bash lab/down-all.sh
@@ -57,8 +57,7 @@ step "7/7 summary"
 cat <<EOF
 PatchGate (our server) : https://patchgate.${DOMAIN}:3443          (browser on this PC; trust lab/certs/out/ca.crt or accept the lab cert)
   sign-in              : local accounts in lab/patchgate/lab-users.json (gitignored)
-  2nd factor           : OFF in the lab (AUTH_MFA=off: password only). With AUTH_MFA=required:
-                         node lab/patchgate/pg-api.mjs totp <upn>     (secret recorded at first sign-in)
+  sign-in details      : node lab/patchgate/show-login.mjs <upn>   (password only, no code)
 Bank A Tactical        : https://rmm.${DOMAIN}  (credentials: lab/tactical/.env)
 Bank A connector cache : https://pg-cache.${DOMAIN}:8443/repo/...   (docker logs -f bank-a-connector)
 Bank A SIEM            : lab/siem/received.log  ·  node lab/siem/check.mjs bank-a-connector-hq

@@ -8,6 +8,8 @@ import { withTenant } from "@/lib/tenancy";
 import { getPageTenant } from "@/lib/tenancy/page";
 import { env } from "@/lib/env";
 import { Badge, Card, Loading, PageHeader, Stat, fmtDate } from "@/components/ui";
+import { ApprovalOffNote } from "@/components/approval-off-note";
+import { LiveRefresh } from "@/components/live-refresh";
 
 type Health = Awaited<ReturnType<typeof connectorHealth>>;
 
@@ -93,6 +95,10 @@ async function DashboardStats() {
 
   return (
     <div className="space-y-6">
+      <div className="flex justify-end">
+        <LiveRefresh active={deploying > 0 || health.queuedJobs > 0} />
+      </div>
+      <ApprovalOffNote approvalRequired={tenant.requireBankApproval} />
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat
           label="Fully patched PCs"

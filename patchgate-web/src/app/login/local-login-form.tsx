@@ -1,33 +1,23 @@
 "use client";
 
 import { useState, type FormEvent, type ReactNode } from "react";
-import { ArrowLeft, Check, Copy, KeyRound, Loader2, LogIn, ShieldCheck, Smartphone } from "lucide-react";
+import { ArrowLeft, KeyRound, Loader2, LogIn } from "lucide-react";
 import { callApi } from "@/components/api-client";
 import { Alert, BUTTON, buttonBase, inputCls, labelCls } from "@/components/ui";
 
-type View =
-  | { step: "password" }
-  | { step: "verify" }
-  | { step: "enroll"; secret: string; otpauthUri: string; qrSvgDataUrl: string }
-  | { step: "change-password" };
+type View = { step: "password" } | { step: "change-password" };
 
-type StepResponse =
-  | { step: "verify" }
-  | { step: "enroll"; secret: string; otpauthUri: string; qrSvgDataUrl: string }
-  | { step: "change-password" }
-  | { step: "done"; redirect: string };
+type StepResponse = { step: "change-password" } | { step: "done"; redirect: string };
 
 const RESTART_HINT = /expired|cancelled|start again|sign in again/i;
 const PASSWORD_MIN = 14;
 
 interface LocalLoginFormProps {
   returnTo: string;
-  /** false = AUTH_MFA=off: no authenticator step is shown (the server skips it). */
-  mfa?: boolean;
 }
 
-/** Local sign-in: password → authenticator (enrol on first use) → forced password change when required. */
-export function LocalLoginForm({ returnTo, mfa = true }: LocalLoginFormProps) {
+/** Local sign-in (password only): password, then a forced password change when required. */
+export function LocalLoginForm({ returnTo }: LocalLoginFormProps) {
   const [view, setView] = useState<View>({ step: "password" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,57 +47,10 @@ export function LocalLoginForm({ returnTo, mfa = true }: LocalLoginFormProps) {
 
   return (
     <div className="space-y-5">
-      <StepIndicator view={view} mfa={mfa} />
       {error && <Alert tone="bad">{error}</Alert>}
       {view.step === "password" && <PasswordStep busy={busy} onSubmit={(upn, password) => send("/api/auth/password", { upn, password, returnTo })} />}
-      {view.step === "verify" && (
-        <CodeStep
-          busy={busy}
-          intro={
-            <p className="text-sm text-muted">
-              Open your authenticator app and enter the 6-digit code for <span className="font-medium text-fg">PatchGate</span>.
-            </p>
-          }
-          submitLabel="Verify"
-          onSubmit={(code) => send("/api/auth/totp", { code })}
-          onBack={restart}
-        />
-      )}
-      {view.step === "enroll" && (
-        <CodeStep busy={busy} intro={<EnrollIntro view={view} />} submitLabel="Verify and continue" onSubmit={(code) => send("/api/auth/totp", { code })} onBack={restart} />
-      )}
       {view.step === "change-password" && <ChangePasswordStep busy={busy} onSubmit={(newPassword) => send("/api/auth/password/change", { newPassword })} onBack={restart} />}
     </div>
-  );
-}
-
-function StepIndicator({ view, mfa }: { view: View; mfa: boolean }) {
-  const steps = [
-    { key: "password", label: "Password", icon: KeyRound },
-    ...(mfa ? [{ key: "mfa", label: "Authenticator", icon: Smartphone }] : []),
-    ...(view.step === "change-password" ? [{ key: "change-password", label: "New password", icon: ShieldCheck }] : []),
-  ];
-  const current = view.step === "password" ? 0 : view.step === "change-password" ? steps.length - 1 : 1;
-  return (
-    <ol className="flex items-center gap-2 text-xs" aria-label="Sign-in steps">
-      {steps.map((s, i) => {
-        const Icon = i < current ? Check : s.icon;
-        const state = i < current ? "done" : i === current ? "current" : "todo";
-        return (
-          <li key={s.key} className="flex items-center gap-2" aria-current={state === "current" ? "step" : undefined}>
-            {i > 0 && <span aria-hidden className="h-px w-5 bg-border-strong" />}
-            <span
-              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 font-medium ${
-                state === "current" ? "bg-primary text-primary-fg" : state === "done" ? "bg-success-soft text-success" : "bg-neutral-soft text-muted"
-              }`}
-            >
-              <Icon size={13} aria-hidden />
-              {s.label}
-            </span>
-          </li>
-        );
-      })}
-    </ol>
   );
 }
 
@@ -168,73 +111,6 @@ function PasswordStep({ busy, onSubmit }: { busy: boolean; onSubmit: (upn: strin
         />
       </label>
       <SubmitButton busy={busy} label="Continue" icon={<LogIn size={16} aria-hidden />} />
-    </form>
-  );
-}
-
-function EnrollIntro({ view }: { view: Extract<View, { step: "enroll" }> }) {
-  const [copied, setCopied] = useState(false);
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(view.secret.replace(/\s/g, ""));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setCopied(false);
-    }
-  }
-  return (
-    <div className="space-y-4">
-      <Alert tone="info">Two-factor authentication is mandatory. Set up an authenticator app (Microsoft Authenticator, Google Authenticator, FreeOTP…) to continue.</Alert>
-      <ol className="list-decimal space-y-1 pl-5 text-sm text-muted">
-        <li>In the app, add an account and scan this QR code.</li>
-        <li>Enter the 6-digit code the app shows.</li>
-      </ol>
-      <div className="flex justify-center">
-        {/* White tile so the code scans in dark mode too. */}
-        {/* eslint-disable-next-line @next/next/no-img-element -- inline data: URL generated server-side */}
-        <img src={view.qrSvgDataUrl} alt="QR code for your authenticator app" width={184} height={184} className="rounded-lg border border-border bg-white p-2" />
-      </div>
-      <div>
-        <p className="text-xs text-muted">Can&apos;t scan? Enter this key manually (time-based, 6 digits):</p>
-        <div className="mt-1 flex items-center gap-2">
-          <code className="flex-1 select-all break-all rounded-lg bg-surface-2 px-3 py-2 font-mono text-sm tracking-wider text-fg">{view.secret}</code>
-          <button type="button" onClick={copy} className={`${buttonBase} ${BUTTON.default}`} aria-label="Copy key">
-            {copied ? <Check size={15} aria-hidden /> : <Copy size={15} aria-hidden />}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CodeStep({ busy, intro, submitLabel, onSubmit, onBack }: { busy: boolean; intro: ReactNode; submitLabel: string; onSubmit: (code: string) => void; onBack: () => void }) {
-  const [code, setCode] = useState("");
-  function submit(e: FormEvent) {
-    e.preventDefault();
-    onSubmit(code);
-  }
-  return (
-    <form method="post" onSubmit={submit} className="space-y-4">
-      {intro}
-      <label className={labelCls}>
-        Verification code
-        <input
-          className={`${inputCls} text-center font-mono text-2xl tracking-[0.5em]`}
-          name="code"
-          inputMode="numeric"
-          autoComplete="one-time-code"
-          pattern="\d{6}"
-          maxLength={6}
-          required
-          placeholder="••••••"
-          value={code}
-          onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-          autoFocus
-        />
-      </label>
-      <SubmitButton busy={busy} disabled={code.length !== 6} label={submitLabel} icon={<ShieldCheck size={16} aria-hidden />} />
-      <BackLink onBack={onBack} />
     </form>
   );
 }

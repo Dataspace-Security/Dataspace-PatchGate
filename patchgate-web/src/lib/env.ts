@@ -63,14 +63,10 @@ const baseSchema = z.object({
   SESSION_MAX_HOURS: z.coerce.number().int().min(1).max(24).default(8),
   // Dev-only identity (no SSO). Honoured only when NODE_ENV=development AND OIDC is not configured.
   DEV_USER_UPN: z.string().optional(),
-  // ---- Login mode. "local" = PatchGate accounts (password + mandatory TOTP) — the production default.
-  //      "oidc" = external IdP (optional). "dev" = development user switcher (development only).
+  // ---- Login mode. "local" = PatchGate accounts (password only, by design) — the production default.
+  //      "oidc" = external IdP (bank SSO; the IdP enforces MFA). "dev" = development user switcher (development only).
   AUTH_MODE: z.enum(["local", "oidc", "dev"]).optional(),
-  // Second factor of LOCAL sign-in: "required" (default — password + 6-digit TOTP) or "off" (password only;
-  // stored TOTP secrets are kept, so switching back to "required" works at once). Must be "required" before
-  // go-live (GO-LIVE-CHECKLIST). OIDC is unaffected (the IdP does MFA).
-  AUTH_MFA: z.enum(["required", "off"]).default("required"),
-  // 32-byte key (64 hex) encrypting TOTP secrets at rest (AES-256-GCM). Required for AUTH_MODE=local.
+  // 32-byte key (64 hex) encrypting notification webhook URLs at rest (AES-256-GCM). Required for AUTH_MODE=local.
   AUTH_ENC_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, "64 hex chars").optional(),
   // Key rotation only (RUNBOOK §9.4): the OLD AUTH_ENC_KEY, decrypt-only, until the re-encryption CLI ran.
   AUTH_ENC_KEY_PREVIOUS: z.string().regex(/^[0-9a-fA-F]{64}$/, "64 hex chars").optional(),
@@ -129,7 +125,7 @@ const envSchema = baseSchema.superRefine((e, ctx) => {
   }
   const mode = e.AUTH_MODE ?? (OIDC_REQUIRED.every((k) => !!e[k]) ? "oidc" : e.NODE_ENV === "development" ? "dev" : "local");
   if (mode === "local" && !e.AUTH_ENC_KEY) {
-    ctx.addIssue({ code: "custom", path: ["AUTH_ENC_KEY"], message: "required for local login (encrypts TOTP secrets)" });
+    ctx.addIssue({ code: "custom", path: ["AUTH_ENC_KEY"], message: "required for local mode (encrypts notification webhook URLs at rest)" });
   }
   if (e.AUTH_ENC_KEY_PREVIOUS && (!e.AUTH_ENC_KEY || e.AUTH_ENC_KEY_PREVIOUS.toLowerCase() === e.AUTH_ENC_KEY.toLowerCase())) {
     ctx.addIssue({ code: "custom", path: ["AUTH_ENC_KEY_PREVIOUS"], message: "must be the old key, different from AUTH_ENC_KEY (which must be set)" });
@@ -169,16 +165,6 @@ export function authMode(e: Env = env()): "local" | "oidc" | "dev" {
   if (e.AUTH_MODE) return e.AUTH_MODE;
   if (OIDC_REQUIRED.every((k) => !!e[k])) return "oidc";
   return e.NODE_ENV === "development" ? "dev" : "local";
-}
-
-/** Does local sign-in ask for the 6-digit TOTP code? (AUTH_MFA=off → password only; OIDC/dev: not applicable.) */
-export function mfaRequired(e: Pick<Env, "AUTH_MFA"> = env()): boolean {
-  return e.AUTH_MFA !== "off";
-}
-
-/** Local sign-in with the second factor switched off — warned about on /operations, /api/health and to admins. */
-export function mfaDisabled(e: Env = env()): boolean {
-  return authMode(e) === "local" && !mfaRequired(e);
 }
 
 /** Is the /repo tree served without authentication? Explicit REPO_PUBLIC, else only outside production. */

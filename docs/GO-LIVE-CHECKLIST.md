@@ -24,8 +24,8 @@ Legend: **[YOU]** = your decision or action · **[OPS]** = your server admin · 
 | B3 | OPS | `deploy/scripts/generate-secrets.sh`, fill `deploy/.env.production` from `.env.production.example`, TLS cert, CA files (§4). | ☐ |
 | B4 | OPS | One-shot `migrate`, then `docker compose up -d` (§3). | ☐ |
 | B5 | OPS | `deploy/scripts/smoke-test.sh` — every check PASS. | ☐ |
-| B6 | OPS | Create the first platform admin with the tools image (§5); sign in and enrol the authenticator. | ☐ |
-| B6a | OPS | **`AUTH_MFA` must be `required`** (or unset) in `deploy/.env.production`: `/api/health` shows `"mfa":"required"`, no "Two-factor sign-in is OFF" banner, no `auth.mfa_disabled` event after the last restart. | ☐ |
+| B6 | OPS | Create the first platform admin with the tools image (§5); sign in and set a new password. | ☐ |
+| B6a | YOU | Local sign-in is **password-only by design** (no TOTP): confirm the strong-password policy, lockout and session rules are accepted for this bank. Banks that need MFA use their SSO (`AUTH_MODE=oidc`), where the IdP enforces MFA. | ☐ |
 | B6b | OPS | **`QUARANTINE_HOURS` is 48 or more** in `deploy/.env.production` (default 0 = install as soon as verified, used for testing): new Windows update files and packages wait out the soak before any bank can deploy them. | ☐ |
 | B7 | OPS | Monitoring: alerts from RUNBOOK §8 (readiness auditChain/siemExport/repoQuota, connector offline > 10 min, job failure rate, disk, certificate expiry). | ☐ |
 | B8 | OPS | Restore drill once (§7.3) and record the result. | ☐ |
@@ -35,7 +35,8 @@ Legend: **[YOU]** = your decision or action · **[OPS]** = your server admin · 
 | # | Who | Step | Done |
 |---|---|---|---|
 | C1 | YOU | Admin → Banks: create the bank (gets rings Test/Pilot/Production automatically). Choose: approval by bank staff required (default ON), Windows updates via PatchGate (default) or the bank's own WSUS. | ☐ |
-| C2 | YOU | Admin → Users: create the bank's admins (they approve; two if bank staff also raise requests) and any auditors (read-only). Temporary passwords handed over out of band; they must enrol an authenticator. | ☐ |
+| C1a | YOU + BANK | **Approval required stays ON** for the bank (Settings → Approval policy; dashboard shows no amber "Approval is OFF" note). OFF lets one person raise and deploy a change without a second person — not for production. Add a SIEM alert on `bank_policy.approval_switched`. | ☐ |
+| C2 | YOU | Admin → Users: create the bank's admins (they approve; two if bank staff also raise requests) and any auditors (read-only). Temporary passwords handed over out of band; they must change them at first sign-in. | ☐ |
 | C3 | BANK | Provide a small Linux VM (or Docker host) next to their Tactical server for the connector; internal TLS certificate for the package cache; firewall: outbound 443 ONLY to our domain/IP, inbound from PC subnets to the cache port. | ☐ |
 | C4 | YOU | Connectors → Enrol: create a one-time code for the site. Send the init command and the **job-key fingerprint** to the bank over two different channels. | ☐ |
 | C5 | BANK | Run the init command on the connector host. The connector refuses to enrol if the fingerprint does not match. Register the three PatchGate PowerShell scripts in their Tactical and put the script ids in the connector config (connector README). | ☐ |

@@ -1,5 +1,5 @@
 /**
- * AUTH_ENC_KEY rotation: re-encrypt every stored TOTP secret and notification webhook URL from the previous key
+ * AUTH_ENC_KEY rotation: re-encrypt every stored notification webhook URL from the previous key
  * to the current one (also seals webhook URLs still stored in plaintext from before migration 20261016120000).
  *
  *   AUTH_ENC_KEY=<new> AUTH_ENC_KEY_PREVIOUS=<old> npx tsx --env-file=.env scripts/admin/rotate-auth-enc-key.ts --dry-run
@@ -7,7 +7,7 @@
  *
  * Batched, one transaction per batch, idempotent (re-running changes nothing), prints counts only (never
  * secrets) and writes ONE platform audit event `auth.enc_key_rotated` (not on --dry-run). Exit code 1 when
- * some secret could not be decrypted with either key (those users need an MFA reset). Procedure: RUNBOOK §9.4.
+ * some webhook row could not be decrypted with either key (remove and re-add it). Procedure: RUNBOOK §9.4.
  */
 import { registerHooks, createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -64,8 +64,6 @@ async function main(argv: string[]): Promise<number> {
     const r = await rotateAuthEncKey({ ring, dryRun, batchSize });
     out(`${dryRun ? "[dry run] " : ""}current key id ${r.currentKeyId}, previous key id ${r.previousKeyId ?? "(none)"}`);
     const rows = [
-      ["users (TOTP secrets)", r.users],
-      ["pending enrolments", r.challenges],
       ["notification settings (webhook URLs)", r.webhookSettings],
       ["notification outbox (webhook targets)", r.webhookOutbox],
     ] as const;
@@ -75,12 +73,10 @@ async function main(argv: string[]): Promise<number> {
           `undecryptable ${c.failed}, changed concurrently ${c.skippedConcurrent}`,
       );
     }
-    const failed = r.users.failed + r.challenges.failed;
-    if (failed > 0) out(`WARNING: ${failed} secret(s) could not be decrypted with either key — reset MFA for those users.`);
     const hookFailed = r.webhookSettings.failed + r.webhookOutbox.failed;
     if (hookFailed > 0) out(`WARNING: ${hookFailed} webhook row(s) could not be decrypted with either key — remove and re-add those webhooks.`);
     if (!dryRun) out("Audit event auth.enc_key_rotated written to the platform chain.");
-    return failed + hookFailed > 0 ? 1 : 0;
+    return hookFailed > 0 ? 1 : 0;
   } finally {
     await prisma.$disconnect();
   }

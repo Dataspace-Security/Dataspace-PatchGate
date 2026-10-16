@@ -4,7 +4,7 @@ import { DomainError } from "@/lib/errors";
 import type { SessionUser } from "@/lib/auth/session";
 import { transition } from "@/lib/approvals/state-machine";
 import { eligibilityErrors } from "@/lib/approvals/eligibility";
-import { enabledAppIds, toEligible } from "@/lib/approvals/load-eligible";
+import { enabledAppIds, toEligible, requiresOfflineWindowsScan } from "@/lib/approvals/load-eligible";
 import { assertCanActFor } from "@/lib/approvals/service";
 import { withTenant } from "@/lib/tenancy";
 import { deployDeadlineFrom } from "./deadline";
@@ -44,7 +44,7 @@ export async function startDeployment(user: SessionUser, tenantId: string, crId:
     );
     if (!t.ok) throw new DomainError(t.error, 409);
 
-    const eligible = await toEligible(cr.patches.map((p) => p.patch), await enabledAppIds(tx, tenantId), tx);
+    const eligible = await toEligible(cr.patches.map((p) => p.patch), await enabledAppIds(tx, tenantId), tx, { requireOfflineScan: await requiresOfflineWindowsScan(tx, tenantId) });
     const errors = eligibilityErrors(eligible, new Date());
     if (errors.length > 0) throw new DomainError(errors.join("; "), 409);
 

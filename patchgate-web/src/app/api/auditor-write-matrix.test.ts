@@ -53,7 +53,6 @@ const ALLOWED = new Set([
   "auth/logout",
   "auth/password",
   "auth/password/change",
-  "auth/totp",
   "tenant/select",
   "audit/verify",
   "dev-login",
@@ -144,7 +143,7 @@ describe("AUDITOR can never change anything", () => {
       for (const method of METHODS) {
         const handler = mod[method];
         if (typeof handler !== "function") continue;
-        const actions = key.endsWith("[action]") ? ["reset-password", "reset-mfa", "unlock"] : [undefined];
+        const actions = key.endsWith("[action]") ? ["reset-password", "unlock"] : [undefined];
         for (const action of actions) {
           checked++;
           const params = { ...paramsFor(key), ...(action ? { action } : {}) };
@@ -156,7 +155,7 @@ describe("AUDITOR can never change anything", () => {
         }
       }
     }
-    expect(checked).toBe(5); // POST users, PATCH users/:id, POST users/:id/{reset-password,reset-mfa,unlock}
+    expect(checked).toBe(4); // POST users, PATCH users/:id, POST users/:id/{reset-password,unlock}
     expect(results).toEqual([]);
   });
 

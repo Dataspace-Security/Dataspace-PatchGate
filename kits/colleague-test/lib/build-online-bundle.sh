@@ -86,13 +86,13 @@ docker save -o "$STAGE/images/local.tar" "$CONNECTOR_IMAGE"
 H="$REPO/installers/site"
 cp "$H/install-site.sh" "$STAGE/install-site.sh"
 cp "$CACHE/docker-compose-$TACTICAL_VERSION.yml" "$STAGE/tactical/docker-compose.yml"
-cp "$H/tactical/docker-compose.site.yml" "$H/tactical/provision-site.py" "$STAGE/tactical/"
+cp "$H/tactical/docker-compose.site.yml" "$H/tactical/provision-site.py" "$H/tactical/break-glass.py" "$STAGE/tactical/"
 cp -r "$H/tactical/meshcentral-offline" "$STAGE/tactical/meshcentral-offline"
 cp "$H/connector/write-config.mjs" "$STAGE/connector/"
 for s in Install-PatchGatePackage.ps1 Invoke-PatchGateWuScan.ps1 Install-PatchGateWinUpdate.ps1; do
   cp "$REPO/patchgate-web/scripts/endpoint/$s" "$STAGE/endpoint/$s"
 done
-cp "$REPO/installers/pc/Install-PatchGateAgent.ps1" "$STAGE/pc/"
+cp "$REPO/installers/pc/Install-PatchGateAgent.ps1" "$REPO/installers/pc/Install-PatchGateAgent.cmd" "$STAGE/pc/"
 cat > "$STAGE/bundle.env" <<ENV
 BUNDLE_VERSION=$VERSION
 TACTICAL_VERSION=$TACTICAL_VERSION

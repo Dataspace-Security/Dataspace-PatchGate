@@ -16,8 +16,8 @@
 # 0700/0600) so no PatchGate web/fetcher process can read a private key even if mis-mounted.
 # Run as root so ownership can be set.
 #
-# NEVER rotate audit_hmac_key or auth_enc_key casually: the audit chain is HMAC'd with the first, TOTP
-# secrets are encrypted with the second (procedures in docs/RUNBOOK.md §9). Escrow a copy of
+# NEVER rotate audit_hmac_key or auth_enc_key casually: the audit chain is HMAC'd with the first, notification
+# webhook URLs are encrypted with the second (procedures in docs/RUNBOOK.md §9). Escrow a copy of
 # secrets/ (encrypted, two custodians) — a database backup is useless without the matching keys.
 set -euo pipefail
 umask 077
@@ -269,7 +269,7 @@ cat <<'TXT'
 
 Next:
   1. Escrow an encrypted copy of secrets/ offline (two custodians). Without audit_hmac_key + auth_enc_key
-     a restored database cannot verify its audit chain or accept TOTP logins.
+     a restored database cannot verify its audit chain or read its notification webhook URLs.
   2. Backups: generate the age key pair OFFLINE (age-keygen -o patchgate-backup.agekey) and put only the
      public key ("age1...") into BACKUP_AGE_RECIPIENTS in .env.production.
   3. Give each bank its job-signing key fingerprint (job-signing-keys/FINGERPRINTS.txt) out-of-band;

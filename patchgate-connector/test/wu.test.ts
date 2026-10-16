@@ -6,7 +6,7 @@ import { CacheDownloader } from "../src/cache/download.ts";
 import { CacheIndex } from "../src/cache/cache-index.ts";
 import { JobError } from "../src/jobs/errors.ts";
 import { executeJob, isDeployJob, isNonIdempotent, type ExecutorDeps } from "../src/jobs/executors.ts";
-import { UPDATE_ENTRY_RE, batchUpdates, extractResultJson, parseInstallOutput, parseScanOutput, updateEntries } from "../src/jobs/wu-parse.ts";
+import { UPDATE_ENTRY_RE, batchUpdates, extractResultJson, parseInstallOutput, parseScanOutput, parseWuLock, updateEntries } from "../src/jobs/wu-parse.ts";
 import { createPatchGateClient } from "../src/pg-client.ts";
 import { rawFromPublicKey, resultSchemas, type JobPackage } from "../src/protocol.ts";
 import { createTacticalClient } from "../src/tactical/client.ts";
@@ -262,6 +262,21 @@ describe("wu-parse", () => {
     expect(() => extractResultJson("nothing")).toThrow(/no result line/);
     expect(parseScanOutput(A1, "PATCHGATE_RESULT={bad")).toEqual({ agentId: A1, error: "result line is not valid JSON" });
     expect(parseInstallOutput('PATCHGATE_RESULT={"ok":true}')).toEqual({ ok: false, error: "unexpected install script output" });
+  });
+
+  it("passes the Windows Update lock report through (also on a failed scan) and drops malformed ones", () => {
+    const lock = { locked: false, issues: ["NoAutoUpdate is not 1"], lastOutsideInstall: { at: "2026-10-01T10:00:00Z", title: "KB1" } };
+    expect(parseScanOutput(A1, `PATCHGATE_RESULT=${JSON.stringify({ ok: true, updates: [], wuLock: lock })}`)).toEqual({ agentId: A1, updates: [], wuLock: lock });
+    expect(parseScanOutput(A1, `PATCHGATE_RESULT=${JSON.stringify({ ok: false, error: "x", wuLock: { locked: true, issues: [] } })}`)).toEqual({
+      agentId: A1,
+      error: "scan failed on PC: x",
+      wuLock: { locked: true, issues: [], lastOutsideInstall: null },
+    });
+    expect(parseScanOutput(A1, 'PATCHGATE_RESULT={"ok":true,"updates":[],"wuLock":{"locked":"yes"}}')).toEqual({ agentId: A1, updates: [] });
+    const clipped = parseWuLock({ locked: false, issues: Array.from({ length: 30 }, () => "i".repeat(500)).concat([5 as unknown as string]) })!;
+    expect(clipped.issues).toHaveLength(20);
+    expect(clipped.issues[0]).toHaveLength(300);
+    expect(resultSchemas.WU_SCAN.safeParse({ agents: [{ agentId: A1, updates: [], wuLock: clipped }] }).success).toBe(true);
   });
 
   it("builds entries the install script accepts", () => {

@@ -18,7 +18,7 @@ Items marked **TO VERIFY** depend on work that was still in progress when this r
 | Runtime | Docker Engine ≥ 26 + Compose v2 (≥ 2.24 for `env_file.required`) |
 | Network | Public IP / DNS name for `PATCHGATE_HOSTNAME`; inbound 443 (and 80 for redirect/ACME) only; SSH from the management VPN only |
 | Egress | Firewall allow-list: vendor hosts (via the egress proxy), our SIEM, NTP, DNS, container registry. Nothing else |
-| Time | NTP synchronised (connector signatures reject clock skew > 5 min; TOTP needs ±30 s) |
+| Time | NTP synchronised (connector signatures reject clock skew > 5 min) |
 | Storage | Separate volumes for Docker data (PostgreSQL), package store (`repo` volume) and backups (off-host) |
 
 ### 1.2 Sizing by number of banks (N) and agents (M)
@@ -148,8 +148,8 @@ Settings for notifications, monitoring and the one-line site install:
 | `METRICS_TOKEN` | secret `metrics_token` → `METRICS_TOKEN_FILE` (compose, web-1/2) | bearer token for `GET /api/metrics`; the same file is Prometheus' `credentials_file` (§8). Never also set `METRICS_TOKEN` in the env file |
 | `PATCHGATE_SITE_BUNDLE_DIR` | fixed in compose: `/data/site-bundles` (volume `site-bundles`, read-only) | site bundles for `/install/*` (§6.1). Unset = 404 "site bundles not configured" |
 | `PATCHGATE_SITE_BUNDLE_LATEST` | `.env.production` (optional) | version served as `latest` and as `site.sh`; unset = first line of `<dir>/LATEST` (switching needs no restart) |
-| `AUTH_MFA` | `.env.production` (optional) | `required` (default): local sign-in = password **+ 6-digit TOTP**. `off`: password only — no TOTP step, no forced enrolment; stored TOTP secrets are kept, so switching back to `required` works at once (users without one enrol at the next sign-in). While `off`: warning banner for admins, `mfa:"off"` on `/api/health`, `checks.mfa=false` on `/api/ready` (report-only), warning on /operations, `auth.mfa_disabled` on the platform audit chain at every process start. Temporary-password change, lockout and session limits are unchanged. **Must be `required` before go-live.** Not used with `AUTH_MODE=oidc` (the IdP does MFA) |
 | `PATCHGATE_SITE_BUNDLE_PUBKEY` | `.env.production` (required for web install) | `ed25519:<base64>` from `bundle-signing.pub.txt`; baked into `site.sh`. Unset = `site.sh` refuses downloaded bundles (sites would need `--bundle-key` or the lab-only `--allow-unsigned`) |
+| `AGENT_SYNC_MINUTES` | `.env.production` (optional) | how often each site connector re-reads its Tactical agent list (`SYNC_AGENTS`, one Tactical API call, no PC traffic): default `15`, min `5`, max `1440`. "Sync agents now" / "Request scan of all PCs" on the Endpoints page sync immediately |
 
 ### 4.1a Roles (fixed — two roles, the same everywhere)
 
@@ -160,10 +160,20 @@ Settings for notifications, monitoring and the one-line site install:
 
 Rules: an auditor never changes anything (only its own password / sessions; it may switch the bank it reads and
 check a SIEM anchor — both change no data) and never sees one-time secrets (temporary passwords, enrolment codes,
-webhook URLs are shown masked). Maker ≠ checker always; every change request needs ≥ 1 approving **admin of that
-bank**; emergency / large requests need two distinct admins, at least one from the bank. **Accounts are managed
+webhook URLs are shown masked). Maker ≠ checker always; with **Approval required ON** (the default) every change
+request needs ≥ 1 approving **admin of that bank**; emergency / large requests need two distinct admins, at least
+one from the bank.
+
+**Approval on/off** (Settings → Approval policy, `Tenant.requireBankApproval`): only an **ADMIN** (the bank's admin
+or a platform admin; never an auditor) may switch it. OFF = an admin's change request is approved **on submit**
+without a second person (`ChangeRequest.autoApproved`, audit `change_request.approval_skipped` on the bank's chain
+with the policy reason) and can then be deployed; emergency / two-approver rules and the emergency window bypass
+apply only while approval is ON. Every switch is audited (`bank_policy.updated` + `bank_policy.approval_switched`)
+and notified to the bank's and the platform's admins (critical event `APPROVAL_SETTING_CHANGED`, cannot be muted).
+While OFF the dashboard and the change-request pages show an amber note. Recommended for production: **ON**
+(GO-LIVE-CHECKLIST C1a). Migration `20261016173000_approval_switch` dropped the always-on CHECK of `20261016130000`. **Accounts are managed
 only by platform admins**: creating users (for our team or any bank), editing name / role / active, resetting
-password or MFA and unlocking are platform-admin operations (the API answers 403 "Accounts are managed by PatchGate
+a password and unlocking are platform-admin operations (the API answers 403 "Accounts are managed by PatchGate
 platform administrators" to everyone else). Nobody from a bank creates or changes accounts — otherwise a bank
 admin could mint a second admin, learn its temporary password and approve its own change request. Every account
 change is audited on the user's own chain (bank users: the bank's chain).
@@ -175,7 +185,7 @@ SSO: `OIDC_ROLE_MAP` may map only to `ADMIN` / `AUDITOR` (start-up fails otherwi
 | File | Becomes | Notes |
 |---|---|---|
 | `audit_hmac_key` | `AUDIT_HMAC_KEY` | keys the audit chain. Loss = chain unverifiable. Never rotate casually (§9.3) |
-| `auth_enc_key` | `AUTH_ENC_KEY` (64 hex) | AES-256-GCM key for TOTP secrets at rest (§9.4) |
+| `auth_enc_key` | `AUTH_ENC_KEY` (64 hex) | AES-256-GCM key for notification webhook URLs at rest (§9.4) |
 | `job-signing-keys/default.pem`, `job-signing-keys/<tenantId>.pem` (+ `.pub.pem`, `FINGERPRINTS.txt`) | **signer only** (`SIGNER_KEY_DIR`) | Ed25519, one per bank (fallback `default`); dir 0700 / files 0600 owned by uid **10002** — no web/fetcher process can read them. Connectors pin the bank's key (§6, §9.1) |
 | `job_signer_token` | `JOB_SIGNER_TOKEN_FILE` (web-1/2), `SIGNER_TOKEN_FILE` (signer) | bearer token web → signer; 0640, group 10001 |
 | `pg_ca_cert` (+ CA key kept by `generate-secrets.sh`), `pg_tls_key`, `pg_tls_cert` | DB server TLS (`postgres/db-entrypoint.sh`) + CA every DB client verifies against | internal DB CA; server cert for `db` + `db-replica` signed by it. Clients VERIFY the server (Prisma `sslaccept=strict`, libpq `verify-full`) — §12 item 2 |
@@ -293,7 +303,7 @@ $DC run --rm -it migrate node node_modules/tsx/dist/cli.mjs scripts/admin/create
 
 TO VERIFY before go-live: (a) the command works in the tools image (tsx path aliases, `server-only` hook);
 (b) it runs as `patchgate_owner` — check that its audit write is allowed under RLS (see §12, open item 1);
-(c) the one-time password is shown once and must be changed at first sign-in, then TOTP enrolment.
+(c) the one-time password is shown once and must be changed at first sign-in (sign-in is password-only).
 Two named admins minimum; record the creation in the change ticket.
 
 ---
@@ -306,7 +316,7 @@ Two named admins minimum; record the creation in the change ticket.
 3. **Bank users**: **our** platform admin creates every account of the bank — its admins and auditors — in
    Admin → Users (pick the bank) or with `create-user.ts --tenant <code> --role ADMIN|AUDITOR`. The bank never
    creates, edits, resets or unlocks accounts (§4.1a); bank staff ask their PatchGate administrator (joiners,
-   leavers, role changes, lost authenticator, lock-out). Hand each temporary password over through a separate,
+   leavers, role changes, forgotten password, lock-out). Hand each temporary password over through a separate,
    trusted channel. Bank admins are the bank's checkers and maker ≠ checker is enforced, so each bank needs at
    least **two** admins if bank staff also raise requests (one if only our team raises them).
 4. **Network**: get the bank's egress NAT ranges for each connector site; create
@@ -364,6 +374,62 @@ Keep the previous version directory until no site install is running (rollback =
 
 Offboarding: revoke all connectors (§9.2), export the bank's audit chain and reports, disable users,
 remove allow-list entries, then delete tenant data per contract retention.
+
+### 6.2 PatchGate locks Windows Update on bank PCs
+
+Bank PCs must never take Windows updates directly from Microsoft, only through PatchGate (WU_SCAN: offline scan
+with Microsoft's signed `wsusscn2.cab`; WU_INSTALL: approved `.msu`/`.cab` files from the site cache via `wusa.exe` /
+`DISM /Add-Package`). `installers/pc/Install-PatchGateAgent.ps1` sets these machine policies at **every** run (also
+when the agent is already installed, so the GPO startup script re-applies them at each boot; `-SkipWuLock` = off).
+Key `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate` (and `...\AU`):
+
+| Value | Data | Why |
+|---|---|---|
+| `WUServer`, `WUStatusServer` | `http://patchgate-wu-locked.invalid` | Update server that can never resolve (RFC 2606 `.invalid`): every ONLINE scan (Windows itself, Settings, Tactical's "Run Update Scan" / "Install Approved Updates") fails without reaching Microsoft |
+| `AU\UseWUServer` | 1 | use that server instead of Windows Update / Microsoft Update |
+| `DoNotConnectToWindowsUpdateInternetLocations` | 1 | no fallback to Microsoft's internet locations (only effective together with `UseWUServer`) |
+| `DisableDualScan` | 1 | Windows 10 1607-2004: no "dual scan" against Windows Update next to the server |
+| `SetPolicyDrivenUpdateSourceFor{Feature,Quality,Driver,Other}Updates` + `AU\UseUpdateClassPolicySource` | 1 | Windows 10 2004+ / 11: every update class from the (dead) server, none from Windows Update |
+| `AU\NoAutoUpdate` | 1 | no automatic detection / download / install |
+| `ExcludeWUDriversInQualityUpdate` | 1 | no driver offers |
+| `SetDisableUXWUAccess` | 1 | hides "Check for updates" (UI only) |
+| `...\Windows Defender\Signature Updates\FallbackOrder` | `MMPC` | Defender definitions (signature data only) directly from Microsoft's Malware Protection Center, never via Windows Update; `-BlockDefenderDefinitionUpdates` writes `InternalDefinitionUpdateServer` (no definitions from the internet) |
+
+Not set on purpose: `DisableWindowsUpdateAccess` (can make WUA API calls fail with `0x8024002E`) and a Disabled
+`wuauserv` (the offline scan and `wusa.exe` need it): the installer sets `wuauserv` back to **Manual** if it was
+Disabled. Why PatchGate keeps working: the offline scan registers the cab with `AddScanPackageService` and
+searches with `ServerSelection=3` (ssOthers) + that ServiceID + `Online=false`, so it never contacts the configured
+server; `wusa.exe` evaluates the `.msu`'s own embedded scan cab locally; `DISM /Add-Package` does not use the
+Windows Update Agent. This is the documented offline-scan scenario for WSUS-managed / disconnected PCs.
+**Still to confirm on the first real PC** (lab): after the lock, WU_SCAN returns updates and WU_INSTALL installs
+one, while Tactical's "Run Update Scan" fails. If WU_SCAN fails there, re-run the installer with `-SkipWuLock`
+on that PC and report it.
+
+**Defender definitions (default: allowed, decided 2026-10-16):** Defender fetches its security intelligence
+(signature data only — never OS updates, never software) itself from Microsoft's Malware Protection Center, so
+protection never goes stale; the offline scan catalog does not carry definitions. Patches and Windows updates stay
+PatchGate-only. Banks that must have no internet traffic from PCs at all run the installer with
+`-BlockDefenderDefinitionUpdates` (definitions then age until delivered another way). Record the choice in the
+bank's onboarding ticket.
+
+**Detection + alert:** every WU_SCAN first checks the values above, the Defender source, `wuauserv` not Disabled
+and the edition (Home ignores these policies) and reports `wuLock {locked, issues, lastOutsideInstall}`.
+`lastOutsideInstall` is best-effort: the newest successful install in the Windows Update history whose client is
+not PatchGate / wusa. The Endpoints page shows **locked** / **NOT locked** (problems on hover) and a red banner.
+When a PC becomes NOT locked (or reports NOT locked for the first time) PatchGate writes
+`endpoint.wu_lock_broken` on the bank's audit chain and sends ONE `WU_LOCK_BROKEN` notification per scan result to
+bank + platform admins (and webhooks); locked again = `endpoint.wu_lock_restored`. Fix: re-run the installer on
+the PC (or correct the GPO), then request a scan.
+
+**GPO instead of the script:** Computer Configuration > Administrative Templates > Windows Components > Windows
+Update: "Specify intranet Microsoft update service location" = Enabled, both URLs `http://patchgate-wu-locked.invalid`;
+"Do not connect to any Windows Update Internet locations" = Enabled; "Configure Automatic Updates" = Disabled;
+"Remove access to use all Windows Update features" = Enabled (writes `SetDisableUXWUAccess`); "Do not include
+drivers with Windows Updates" = Enabled; "Specify source service for specific classes of Windows Updates" = Enabled,
+all four classes = Windows Server Update Service; "Do not allow update deferral policies to cause scans against
+Windows Update" = Enabled (`DisableDualScan`). Windows Components > Microsoft Defender Antivirus > Security
+Intelligence Updates: "Define the order of sources..." = `InternalDefinitionUpdateServer` (or `MMPC`). Do NOT
+disable the Windows Update service. The same scan check applies, so a wrong GPO shows as NOT locked.
 
 ---
 
@@ -488,7 +554,7 @@ fetch runs, audit chains, SIEM export, repository quota, certificate). Same thre
 | Disk: DB / backups | volume usage; `backups/last-run.json` older than 26 h or `status=failed` | P2 |
 | Replication | `pg_stat_replication` missing / `replay_lag` > 5 min; slot retained WAL > 10 GB | P2 |
 | Edge | nginx 5xx rate > 1 % (5 min), 429 spikes, 403 on `/api/connector/*` from unknown IPs | P2 / P3 |
-| Security events | audit: login failures/lockouts, MFA resets, role changes, trust decisions, connector enrol/revoke | forwarded to SIEM; SIEM correlation rules |
+| Security events | audit: login failures/lockouts, password resets, role changes, trust decisions, connector enrol/revoke | forwarded to SIEM; SIEM correlation rules |
 
 ---
 
@@ -547,9 +613,9 @@ key in escrow for verifying history, and treat the SIEM copy as the authoritativ
 Containers holding this key: web-1/2, fetcher (it appends audit events) and migrate (admin CLI) — not the
 signer, scheduler, nginx or backup. A fetcher compromise therefore triggers this procedure.
 
-### 9.4 `AUTH_ENC_KEY` rotation (TOTP secrets at rest)
+### 9.4 `AUTH_ENC_KEY` rotation (notification webhook URLs at rest)
 
-No user re-enrols. The app always **encrypts** with `AUTH_ENC_KEY` and **decrypts** with `AUTH_ENC_KEY` or the
+Sign-in does not use this key (local sign-in is password-only). The app always **encrypts** with `AUTH_ENC_KEY` and **decrypts** with `AUTH_ENC_KEY` or the
 optional, decrypt-only `AUTH_ENC_KEY_PREVIOUS` (64 hex, must differ). Every ciphertext names its key by an
 8-hex key id (`v1.<iv>.<tag>.<ct>.<kid>`; older ciphertexts without a key id still decrypt with either key).
 The re-encryption CLI is `patchgate-web/scripts/admin/rotate-auth-enc-key.ts`.
@@ -557,25 +623,24 @@ The re-encryption CLI is `patchgate-web/scripts/admin/rotate-auth-enc-key.ts`.
 1. **Generate the new key**, keeping the old one: `cp -p secrets/auth_enc_key secrets/auth_enc_key_previous`,
    then `generate-secrets.sh --rotate auth_enc_key`. Escrow both files.
 2. **Deploy with both keys**: `AUTH_ENC_KEY` = new, `AUTH_ENC_KEY_PREVIOUS` = old, on web-1/2 and migrate,
-   then `$DC up -d`. Sign-in keeps working for everyone (old secrets decrypt with the previous key; new
-   enrolments use the new key).
+   then `$DC up -d`. Notifications keep working (old boxes decrypt with the previous key; new webhook URLs
+   are sealed with the new key).
 3. **Re-encrypt** (tools image, same env as step 2):
    `$DC run --rm migrate node node_modules/tsx/dist/cli.mjs scripts/admin/rotate-auth-enc-key.ts --dry-run`,
-   then the same command without `--dry-run`. The CLI rewrites every `User.totpSecretEnc` and pending
-   `AuthChallenge.pendingSecretEnc` under the new key in batches (one transaction per batch, `--batch-size`,
-   default 100), and every notification webhook URL (`NotificationSetting.webhookUrlsEnc`, any remaining legacy
-   plaintext, `WEBHOOK` outbox targets). It prints counts only and writes one platform audit event `auth.enc_key_rotated`. It is
-   idempotent: run it again and check `re-encrypted 0`. Exit code 1 = some secrets were undecryptable with
-   either key; reset MFA for those users (they re-enrol at next sign-in).
+   then the same command without `--dry-run`. The CLI rewrites every notification webhook URL
+   (`NotificationSetting.webhookUrlsEnc`, any remaining legacy plaintext, `WEBHOOK` outbox targets) under the new
+   key in batches (one transaction per batch, `--batch-size`, default 100). It prints counts only and writes one platform audit event `auth.enc_key_rotated`. It is
+   idempotent: run it again and check `re-encrypted 0`. Exit code 1 = some webhook rows were undecryptable
+   with either key; remove and re-add those webhooks.
 4. **Remove the previous key**: unset `AUTH_ENC_KEY_PREVIOUS`, `$DC up -d`, delete
-   `secrets/auth_enc_key_previous` once the escrow holds the new key. Check that a test user signs in.
+   `secrets/auth_enc_key_previous` once the escrow holds the new key. Check that a test notification is delivered.
 
 Deploy wiring: `generate-secrets.sh --rotate auth_enc_key` moves the current key to `secrets/auth_enc_key_previous`
 (never overwrites a different previous key without `--force`); add `-f docker-compose.rotation.yml` to the compose
 command for steps 2–3 (it passes `AUTH_ENC_KEY_PREVIOUS_FILE` to web-1/2 and migrate); drop that override in step 4.
 Containers holding these keys: web-1/2 and migrate only (the fetcher gets a random placeholder).
-Compromised key: same procedure, but in step 4 also reset MFA for every user. An attacker with the old key
-and a database copy taken before the rotation can still read the old TOTP seeds.
+Compromised key: same procedure, then rotate the webhook URLs themselves at the receiving side (Teams/Slack) — an
+attacker with the old key and a database copy taken before the rotation can still read the old URLs.
 
 ### 9.5 Audit chain verification failed (`auditChain=false`)
 
@@ -634,7 +699,7 @@ previous tags. Never edit `_prisma_migrations` by hand without the dev team.
 - **Format**: JSON lines on stdout/stderr: `{"ts","level","msg",…fields}`. New code uses
   `src/lib/log.ts` (`log.info("area.event", { … })`, `log.child({ component })`); `msg` is a stable dotted
   event name, data goes in fields, secret-looking keys (password, token, secret, authorization, cookie,
-  api key, private key, session, totp, …) are redacted automatically, URL query strings are dropped.
+  api key, private key, session, otp, …) are redacted automatically, URL query strings are dropped.
   `LOG_LEVEL` = debug | info | warn | error | silent (default info). The scheduler, backup, nginx and
   egress-proxy emit the same shape. Existing `console.*` calls in the app will migrate over time.
 - **Collection**: Docker `json-file` with rotation (50 MB × 10 per container) as a local buffer; ship to
@@ -643,7 +708,7 @@ previous tags. Never edit `_prisma_migrations` by hand without the dev team.
   **audit chain** (DB + SIEM) is the system of record for security events — retained per contract,
   minimum 5 years (align with each bank's record-retention policy / RBI expectations); backups 35 days
   rolling + monthly copies for 12 months if contracts require.
-- Never log secrets, package contents, full request bodies, TOTP codes or enrolment codes.
+- Never log secrets, package contents, full request bodies or enrolment codes.
 
 ---
 
@@ -692,3 +757,100 @@ Still open:
    offline Windows Update scan + install) is validated in the lab's Windows Sandbox — see
    lab/sandbox/AFTER-RESTART.md — before the first bank pilot.
 5. Host firewall egress rules (§4.3) cannot be verified on Docker Desktop; verify them on the real server.
+
+## 13. Tactical is sealed (nobody patches through Tactical by hand)
+
+Each bank site runs the official, unmodified Tactical RMM next to the connector. PatchGate is the only way
+patches and software reach the PCs; Tactical is a sealed delivery engine. Configured by
+`installers/site/tactical/provision-site.py` (every install / `--upgrade` / `--pc-token` re-applies it) and
+detected in real time by the connector's Tactical guard (every ~30 s; `TACTICAL_AUDIT_SYNC` as backstop) — no
+Tactical code or image is changed.
+
+**What is sealed (Tactical 1.5.2 settings)**
+
+| Setting | Value | Effect |
+|---|---|---|
+| `block_dashboard_login` of every Tactical user except `patchgate-svc` and the agent-installer user | `True` (also for `tacticaladmin`) | Tactical answers "Bad credentials" to the dashboard login; open dashboard sessions (knox tokens) are deleted |
+| API keys of any user other than `patchgate-svc` | `expiration = now` | Tactical rejects them (expired) |
+| Role "PatchGate service" (`patchgate-svc`) | only `can_list_agents`, `can_manage_winupdates`, `can_list_software`, `can_run_scripts`, `can_list_scripts`, `can_list_clients`, `can_list_sites`, `can_view_auditlogs`; not superuser | the connector's typed jobs + the audit-log read; nothing else |
+| Every patch policy (default, per agent, automation policies) | all severities `manual` | Tactical never approves by itself |
+| `local_settings.py` (installer) | `TRMM_DISABLE_APPROVE_UPDATES_TASK`, `TRMM_DISABLE_WINUPDATES_INSTALL_TASK`, `TRMM_DISABLE_AGENT_AUTO_UPDATE_TASK`, `TRMM_DISABLE_WEB_TERMINAL`, `TRMM_DISABLE_SERVER_SCRIPTS`, `TRMM_DISABLE_SSO` | no automatic approve/install/agent update, no web terminal, no server-side scripts, no SSO login path |
+
+The seal itself is written to Tactical's audit log (`patchgate-provision`) and therefore shows up once in
+PatchGate's "Tactical activity" after a (re-)install. Other dashboard users found at provisioning are blocked
+and listed as a WARN by the installer.
+
+**Break-glass (emergency dashboard use).** `tacticaladmin` is the break-glass account; its password is
+`TRMM_PASS` in `/opt/patchgate-site/tactical.env` (root-only, shown once at the first install).
+
+1. Agree the reason with PatchGate support (ticket). Never use it to approve, install or run anything on PCs.
+2. On the site VM as root: `sudo /opt/patchgate-site/runtime/install-site.sh --break-glass on`
+3. Sign in at `https://rmm.<site domain>` as `tacticaladmin`; set up two-factor authentication on first use.
+4. When done: `sudo /opt/patchgate-site/runtime/install-site.sh --break-glass off` (blocks the login again and
+   ends its sessions). A later `--upgrade` or `--pc-token` keeps an open break-glass session open (state file
+   `state/break-glass`); everything else is re-sealed.
+5. In PatchGate (Connectors → Tactical activity) a bank or platform ADMIN acknowledges the entries with the
+   ticket reference (audited `tactical.activity_acknowledged`).
+
+Both commands write a `BREAK-GLASS ON/OFF` entry to Tactical's audit log, `logger -t patchgate-site` (syslog)
+and the installer log.
+
+**What is detected and alerted (real time).** The connector runs a Tactical guard every
+`tactical.guardIntervalSec` (default **30 s**) on the site VM — Tactical-server reads only, no PC traffic:
+
+- **Audit log.** It reads Tactical's audit log from its cursor (read-only `PATCH /logs/audit/`, permission
+  `can_view_auditlogs`, small pages) and pushes every entry **not** made by `patchgate-svc` — plus any login
+  attempt as `patchgate-svc` — to PatchGate at once (signed `POST /api/connector/v1/tactical-events`, ≤ 200
+  entries per push): dashboard logins (incl. break-glass) and failed logins, script runs, commands, remote
+  sessions, agent installs, bulk/URL actions, any add/modify/delete (users, roles, API keys, policies, patch
+  policies, core settings, scripts, …). It appears on the Connectors page within about a minute.
+- **Update approvals.** Tactical **does not audit update approvals** ("approve" on an agent's Patches tab,
+  "Install Approved Updates", "Run Update Scan"), so the guard reads them: one `GET /agents/` (each agent
+  carries `has_patches_pending`) and `GET /winupdate/<agent>/` only for PCs with pending approvals, at most
+  `tactical.guardMaxAgentReadsPerTick` (default 25) per round. An approval PatchGate did not authorise is
+  **reset automatically within ~30 seconds** (action "nothing", the same as `RESET_APPROVALS`), re-read once
+  to confirm, and reported: "Approval of KB… on DESKTOP-… reset automatically at hh:mm:ss UTC". PatchGate's
+  own approvals of a deployment whose window is open are never touched; leftovers of a window that ended are
+  withdrawn quietly. The guard knows PatchGate's approvals only from signed jobs (`DEPLOY_WINDOWS`, and after
+  a connector start the signed `TACTICAL_GUARD_SYNC` baseline PatchGate sends when the heartbeat reports
+  `guard.allowSetKnown = false`); until it has them it resets nothing. A reset Tactical refuses (or a patch
+  policy that re-approves at once) is reported as "could NOT be reset automatically".
+- **Backstop.** `TACTICAL_AUDIT_SYNC` (every 10 min from PatchGate's cursor) still catches up whatever a push
+  missed, and every COLLECT page is still compared with PatchGate's own approvals (foreign approval →
+  alert + `RESET_APPROVALS` when no deployment is in flight). Connectors without the guard (older versions or
+  `guardIntervalSec: 0`) additionally get PatchGate's approval re-reads after human activity.
+
+An audit log that no longer continues after the cursor (reset / purged / reinstalled) is reported as "audit
+log gap". The guard's state (allow-set, cursor, unsent reports) is `stateDir/tactical-guard.json`; unsent
+reports survive a PatchGate outage and a restart.
+
+Each new entry: one `TacticalActivity` row (bank-owned, RLS), `tactical.out_of_band_action` on the **bank's**
+audit chain (→ bank SIEM via the audit relay), a **critical** `TACTICAL_OUT_OF_BAND` notification to platform
+ADMINs + the bank's ADMINs (bursts coalesced: at most one per bank per 5 minutes, the next one counts what was
+coalesced) (e-mail + both scopes' webhooks; cannot be switched off), a red badge
+on the Connectors page. ADMIN and AUDITOR see the list; ADMIN acknowledges.
+
+**What cannot be prevented (and is why everything is detected).** Root on the site VM or access to Docker
+there can do anything: `docker exec` into the Tactical containers, edit the database, unblock users without
+the installer (then the login is in the audit log, but a direct DB edit is not), delete audit-log rows,
+stop the connector (→ CONNECTOR_OFFLINE alert after 10 min) or change Tactical's code. Tactical also does
+not log a blocked user's login attempt with the right password, approval changes or the "Install Approved
+Updates" button (covered by the guard's approval check, not by the log: an approval made and installed
+within the same ~30 s round can still slip through). Restrict root/Docker on the site VM to the
+bank's named administrators, forward the VM's syslog and auth log to the bank SIEM, and treat any
+unacknowledged Tactical activity as a security incident.
+
+**Agent version is fixed (no Tactical auto-update).** Provisioning sets Tactical's global
+`CoreSettings.agent_auto_update = False` (the global agent auto-update switch of Tactical's settings)
+in addition to `TRMM_DISABLE_AGENT_AUTO_UPDATE_TASK`, so the Tactical agent on the bank PCs stays on the
+version PatchGate deployed; agents are upgraded only through PatchGate's agent-upgrade change requests
+(verified agent release → DEPLOY_PACKAGE). Re-enabling it in the dashboard is a CoreSettings change in
+Tactical's audit log: the connector reports it with the message "AGENT AUTO-UPDATE TURNED ON" (only that
+flag is read from the logged settings snapshot; the snapshot itself, which contains Tactical secrets, is never
+forwarded). Re-run the installer (`--pc-token` or `--upgrade`) to re-seal.
+
+**Seal self-check.** `sudo /opt/patchgate-site/runtime/install-site.sh --status` ends with a read-only
+"Tactical seal" check: dashboard logins still open (other than tacticaladmin during break-glass), other valid
+API keys, patch policies that are not manual, agent auto-update, and whether the service account can read the
+audit log. Any WARN there means the seal is broken: re-run `--pc-token` (re-provisions) and look at
+Connectors → Tactical activity.

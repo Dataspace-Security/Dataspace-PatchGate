@@ -29,7 +29,7 @@ export const DEV_USER_COOKIE = "pg_dev_user";
 
 /**
  * Resolve the current user.
- * - AUTH_MODE local (production default: password + TOTP) or oidc (bank SSO): server-side session
+ * - AUTH_MODE local (production default: password only) or oidc (bank SSO): server-side session
  *   from the opaque session cookie, with idle + absolute expiry and the user / bank kill switches.
  * - AUTH_MODE dev (development only): the dev identity (cookie from /dev-login, else DEV_USER_UPN).
  */

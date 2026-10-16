@@ -14,12 +14,14 @@ export const NOTIFICATION_EVENTS = [
   "CR_DEADLINE",
   "CONNECTOR_OFFLINE",
   "CONNECTOR_ONLINE",
+  "WU_LOCK_BROKEN",
   "PACKAGE_HELD",
   "AUDIT_CHAIN_BROKEN",
   "SIEM_EXPORT_STALE",
+  "TACTICAL_OUT_OF_BAND",
+  "APPROVAL_SETTING_CHANGED",
   "ACCOUNT_LOCKED",
   "PASSWORD_RESET",
-  "MFA_RESET",
 ] as const;
 
 export type NotificationEvent = (typeof NOTIFICATION_EVENTS)[number];
@@ -42,16 +44,18 @@ export const EVENT_INFO: Readonly<Record<NotificationEvent, EventInfo>> = {
   CR_DEADLINE: { label: "Change request deployment deadline reached", severity: "warning", bank: true, platform: true },
   CONNECTOR_OFFLINE: { label: "Site connector offline (> 10 min)", severity: "warning", bank: true, platform: true },
   CONNECTOR_ONLINE: { label: "Site connector back online", severity: "info", bank: true, platform: true },
+  WU_LOCK_BROKEN: { label: "Windows Update no longer locked on a PC (could update from Microsoft directly)", severity: "warning", bank: true, platform: true },
   PACKAGE_HELD: { label: "Package held for a trust decision", severity: "warning", bank: false, platform: true },
   AUDIT_CHAIN_BROKEN: { label: "Audit chain verification failed", severity: "critical", bank: false, platform: true },
   SIEM_EXPORT_STALE: { label: "SIEM audit export stale", severity: "critical", bank: false, platform: true },
+  TACTICAL_OUT_OF_BAND: { label: "Action in a site's Tactical outside PatchGate", severity: "critical", bank: true, platform: true },
+  APPROVAL_SETTING_CHANGED: { label: "Approval switched on / off for a bank", severity: "critical", bank: true, platform: true },
   ACCOUNT_LOCKED: { label: "Your account was locked", severity: "critical", bank: false, platform: false },
   PASSWORD_RESET: { label: "Your password was reset", severity: "critical", bank: false, platform: false },
-  MFA_RESET: { label: "Your authenticator was reset", severity: "critical", bank: false, platform: false },
 };
 
 /** Personal account notices: e-mail to the affected user only (never webhooks, never toggled off). */
-export const ACCOUNT_EVENTS: ReadonlySet<NotificationEvent> = new Set(["ACCOUNT_LOCKED", "PASSWORD_RESET", "MFA_RESET"]);
+export const ACCOUNT_EVENTS: ReadonlySet<NotificationEvent> = new Set(["ACCOUNT_LOCKED", "PASSWORD_RESET"]);
 
 export function isNotificationEvent(v: unknown): v is NotificationEvent {
   return typeof v === "string" && (NOTIFICATION_EVENTS as readonly string[]).includes(v);

@@ -3,16 +3,15 @@
 //   docker run --rm --network host --user 0 -v /root/kit:/kit --entrypoint node patchgate-tools:<v> /kit/lib/kit-api.mjs <cmd>
 //
 //   setup                 first sign-in of the platform admin (temporary password from the installer -> new
-//                         password + authenticator), bank "Test Bank" (test-bank), the test users (created
-//                         through Administration -> Users API) and their first sign-in (TOTP enrolment).
+//                         password), bank "Test Bank" (test-bank), the test users (created through
+//                         Administration -> Users API) and their first sign-in (temporary password replaced).
 //   enrol "<site name>"   one-time enrolment code + job-key fingerprint -> /kit/secret/enrol.env (0600)
-//   totp <who>            current 6-digit code for <who> (a key from users.conf, e.g. approver)
-//   check-login <who>     sign in with password + TOTP and call one API as that user (prints role/status)
+//   check-login <who>     sign in with username + password and call one API as that user (prints role/status)
 //   logins                print logins.txt content (secrets!) — only redirected into a 0600 file by the kit
 //
-// Secrets live in /kit/secret/users.json (0600, root only, inside the container). Nothing secret is printed
-// except by `totp` (a 30-second code) and `logins` (redirected into the kit's logins.txt by the caller).
-import { createHmac, randomBytes } from "node:crypto";
+// Local sign-in is password-only (no code step). Secrets live in /kit/secret/users.json (0600, root only, inside
+// the container). Nothing secret is printed except by `logins` (redirected into the kit's logins.txt by the caller).
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 
 const BASE = process.env.PG_URL ?? "https://patchgate.pgi.test";
@@ -54,43 +53,6 @@ function newPassword() {
   return `Kit-${randomBytes(6).toString("hex")}-${randomBytes(6).toString("hex")}-Pg`;
 }
 
-// ---------------------------------------------------------------- TOTP (RFC 6238, SHA-1, 30 s, 6 digits)
-function base32Decode(s) {
-  const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let bits = 0, value = 0;
-  const out = [];
-  for (const ch of s.replace(/[\s=-]/g, "").toUpperCase()) {
-    value = ((value << 5) | A.indexOf(ch)) & 0xffff;
-    bits += 5;
-    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
-  }
-  return Buffer.from(out);
-}
-function totpAt(secret, step) {
-  const msg = Buffer.alloc(8);
-  msg.writeBigUInt64BE(BigInt(step));
-  const mac = createHmac("sha1", base32Decode(secret)).update(msg).digest();
-  const o = mac[mac.length - 1] & 0x0f;
-  const bin = ((mac[o] & 0x7f) << 24) | (mac[o + 1] << 16) | (mac[o + 2] << 8) | mac[o + 3];
-  return String(bin % 1_000_000).padStart(6, "0");
-}
-const stepNow = () => Math.floor(Date.now() / 30_000);
-/** A never-used TOTP step for this user (the server accepts each step only once). */
-async function freshCode(key) {
-  for (;;) {
-    const st = readState();
-    const u = st.users[key];
-    if (!u?.totpSecret) throw new Error(`no authenticator secret recorded for ${key}`);
-    const s = stepNow();
-    if (s > (u.lastStep ?? 0)) {
-      u.lastStep = s;
-      writeState(st);
-      return totpAt(u.totpSecret, s);
-    }
-    await sleep((s + 1) * 30_000 - Date.now() + 500);
-  }
-}
-
 // ---------------------------------------------------------------- HTTP with a cookie jar
 function absorb(jar, res) {
   for (const c of res.headers.getSetCookie?.() ?? []) {
@@ -129,7 +91,7 @@ async function call(jar, method, path, body) {
   }
 }
 
-/** Full local sign-in: password -> (enrol authenticator) -> TOTP -> (forced password change) -> session. */
+/** Full local sign-in (password only): password -> (forced password change) -> session. */
 async function signIn(key) {
   const st = readState();
   const u = st.users[key];
@@ -137,16 +99,7 @@ async function signIn(key) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const jar = {};
     const p = await call(jar, "POST", "/api/auth/password", { upn: u.upn, password: u.password, returnTo: "/" });
-    if (!p.json.success) throw new Error(`sign-in (password step) for ${u.upn}: ${p.status} ${p.json.error}`);
-    if (p.json.data.step === "enroll") {
-      const s2 = readState();
-      s2.users[key].totpSecret = p.json.data.secret.replace(/\s/g, "");
-      s2.users[key].otpauthUri = p.json.data.otpauthUri;
-      writeState(s2);
-      log(`${u.upn}: authenticator enrolled (secret recorded for logins.txt)`);
-    }
-    let t = await call(jar, "POST", "/api/auth/totp", { code: await freshCode(key) });
-    if (t.json.success && t.json.data.step === "change-password") {
+    if (p.json.success && p.json.data.step === "change-password") {
       const pw = newPassword();
       const c = await call(jar, "POST", "/api/auth/password/change", { newPassword: pw });
       if (!(c.json.success && c.json.data.step === "done")) throw new Error(`password change for ${u.upn}: ${c.status} ${c.json.error}`);
@@ -158,8 +111,9 @@ async function signIn(key) {
       log(`${u.upn}: temporary password replaced at first sign-in (new one recorded for logins.txt)`);
       return jar;
     }
-    if (t.json.success && t.json.data.step === "done") return jar;
-    log(`${u.upn}: TOTP step answered ${t.status} ${t.json.error ?? ""} - retrying`);
+    if (p.json.success && p.json.data.step === "done") return jar;
+    if (p.status !== 500) throw new Error(`sign-in for ${u.upn}: ${p.status} ${p.json.error}`);
+    log(`${u.upn}: sign-in answered ${p.status} ${p.json.error ?? ""} - retrying`);
   }
   throw new Error(`could not sign in ${u.upn}`);
 }
@@ -208,7 +162,7 @@ async function setup() {
     } else log(`user ${p.upn} exists`);
     if (!readState().users[key].passwordChanged) await signIn(key);
   }
-  log("all test accounts can sign in (password + authenticator)");
+  log("all test accounts can sign in (username + password)");
 }
 
 async function enrol(siteName) {
@@ -231,7 +185,7 @@ async function checkLogin(key) {
   if (!u) throw new Error(`unknown account ${key}`);
   const jar = await signIn(key);
   const r = await call(jar, "GET", "/api/change-requests");
-  log(`${u.upn}: signed in with password + TOTP; GET /api/change-requests -> HTTP ${r.status} success=${r.json.success}`);
+  log(`${u.upn}: signed in with password; GET /api/change-requests -> HTTP ${r.status} success=${r.json.success}`);
   if (r.status !== 200) process.exitCode = 1;
 }
 
@@ -296,10 +250,6 @@ function logins() {
     lines.push(`  password     : ${u.password}`);
     if (key === ADMIN_KEY && u.installerPassword) lines.push(`  (installer's one-time password was: ${u.installerPassword} - already used and replaced by the kit at first sign-in)`);
     else if (u.tempPassword) lines.push(`  (temporary password from Administration -> Users was: ${u.tempPassword} - already replaced at first sign-in)`);
-    if (u.totpSecret) {
-      lines.push(`  TOTP secret  : ${u.totpSecret}`);
-      lines.push(`  otpauth URI  : ${u.otpauthUri ?? ""}`);
-    }
     lines.push("");
   }
   process.stdout.write(lines.join("\n"));
@@ -309,10 +259,7 @@ const [cmd, arg] = process.argv.slice(2);
 try {
   if (cmd === "setup") await setup();
   else if (cmd === "enrol") await enrol(arg || "Head office");
-  else if (cmd === "totp") {
-    if (!PEOPLE[arg]) throw new Error(`who? one of: ${Object.keys(PEOPLE).join(", ")}`);
-    process.stdout.write(`${await freshCode(arg)}\n`);
-  } else if (cmd === "check-login") await checkLogin(arg);
+  else if (cmd === "check-login") await checkLogin(arg);
   else if (cmd === "cr-check") await crCheck(arg, process.argv[4], process.argv[5]);
   else if (cmd === "get") {
     // debugging aid: GET <path> as <who>, prints the JSON body
@@ -321,7 +268,7 @@ try {
     process.stdout.write(`${JSON.stringify(r.json).slice(0, 4000)}\n`);
   }
   else if (cmd === "logins") logins();
-  else throw new Error("usage: kit-api.mjs setup | enrol <site> | totp <who> | check-login <who> | logins");
+  else throw new Error("usage: kit-api.mjs setup | enrol <site> | check-login <who> | logins");
 } catch (err) {
   process.stderr.write(`kit-api: ${err?.message ?? err}\n`);
   process.exitCode = 1;

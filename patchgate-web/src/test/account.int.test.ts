@@ -28,7 +28,7 @@ interface Fixture {
 
 async function seedUser(tenantId: string | null, upn = "alice@bank-b.test"): Promise<Fixture> {
   const u = await prisma.user.create({
-    data: { upn, name: "Alice", role: "ADMIN", tenantId, passwordHash: await hashPassword(STRONG), totpEnabled: true, lastLoginAt: T0 },
+    data: { upn, name: "Alice", role: "ADMIN", tenantId, passwordHash: await hashPassword(STRONG), lastLoginAt: T0 },
   });
   const tokens = await prisma.$transaction(async (tx) => {
     const out: string[] = [];

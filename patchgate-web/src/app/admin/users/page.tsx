@@ -20,7 +20,7 @@ async function UsersTable() {
         title="Users"
         description={
           platform
-            ? "Every PatchGate account — our team and all banks. New users get a one-time temporary password and set up an authenticator at first sign-in."
+            ? "Every PatchGate account — our team and all banks. New users get a one-time temporary password and choose their own at first sign-in."
             : "Accounts of your bank (read-only)."
         }
       />
@@ -67,7 +67,6 @@ async function UsersTable() {
                         <div className="flex flex-wrap gap-1">
                           {u.active ? <Badge tone="good">active</Badge> : <Badge tone="neutral">deactivated</Badge>}
                           {locked && <Badge tone="bad">locked</Badge>}
-                          {u.active && !u.totpEnabled && u.hasPassword && <Badge tone="warn">MFA pending</Badge>}
                           {u.active && u.mustChangePassword && <Badge tone="info">temp password</Badge>}
                           {!u.hasPassword && <Badge tone="neutral">SSO only</Badge>}
                         </div>

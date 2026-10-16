@@ -13,6 +13,7 @@ import {
   publicKeyFromRaw,
   rawFromPublicKey,
   signJob,
+  tacticalPushSchema,
   timestampFresh,
   verifyRequest,
   type Heartbeat,
@@ -20,6 +21,7 @@ import {
   type JobResult,
   type JobType,
   type SignedJob,
+  type TacticalPush,
 } from "../../src/protocol.ts";
 import { readBody } from "./common.ts";
 
@@ -59,6 +61,10 @@ export class FakePatchGate {
   readonly authFailures: string[] = [];
   readonly packageDownloads: string[] = [];
   heartbeatResponse = { maxConcurrentInstalls: 3, bandwidthLimitMbps: null as number | null };
+  /** Real-time guard pushes (POST /tactical-events) accepted, in order. */
+  readonly tacticalPushes: TacticalPush[] = [];
+  /** Answer the next tactical-events posts with these HTTP statuses (consumed in order). */
+  readonly pushStatusQueue: number[] = [];
   /** Force the next N result posts to fail with 503 (tests retry). */
   failResultPosts = 0;
   /** Answer the next result posts with these HTTP statuses (consumed in order; e.g. 413, 403). */
@@ -242,6 +248,16 @@ export class FakePatchGate {
       if (!parsed.success) return this.json(res, 400, { error: parsed.error.issues[0]?.message });
       this.heartbeats.push(parsed.data);
       return this.json(res, 200, { serverTime: new Date().toISOString(), ...this.heartbeatResponse });
+    }
+
+    if (route === "/tactical-events" && req.method === "POST") {
+      const forced = this.pushStatusQueue.shift();
+      if (forced !== undefined) return this.json(res, forced, { error: "forced" });
+      const parsed = tacticalPushSchema.safeParse(JSON.parse(body.toString("utf8")));
+      if (!parsed.success) return this.json(res, 400, { error: parsed.error.issues[0]?.message });
+      this.tacticalPushes.push(parsed.data);
+      const stored = (parsed.data.audit?.events.length ?? 0) + (parsed.data.approvalResets?.length ?? 0);
+      return this.json(res, 200, { auditCursor: parsed.data.audit?.cursor ?? 0, stored });
     }
 
     const pkgMatch = /^\/packages\/([a-f0-9]{64})$/.exec(route);

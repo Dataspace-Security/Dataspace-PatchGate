@@ -2,11 +2,11 @@ import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { freshTotp, labUser, recordTotpSecret } from "./lab-users";
+import { labUser } from "./lab-users";
 
 /**
  * Hosted-lab journey in a real browser against the running lab (no fakes):
- *   our staff sign in (password; + TOTP when the lab runs AUTH_MFA=required) → onboard a bank + one-time connector code in the UI →
+ *   our staff sign in (password only) → onboard a bank + one-time connector code in the UI →
  *   Bank A's real connector is online → switch bank → endpoints / discovery → a bank user sees only
  *   their own bank. Screenshots: e2e-lab/screenshots/.
  */
@@ -18,15 +18,6 @@ const ADMIN = "lab-admin@patchgate.lab";
 const AUDITOR = "lab-auditor@patchgate.lab";
 const BANK_A_APPROVER = "approver@bank-a.lab"; // a second Bank A ADMIN — the bank's checker
 
-/** "off" when the lab runs AUTH_MFA=off (password-only sign-in; the lab default), from /api/health. */
-let mfa = "required";
-test.beforeAll(async ({ browser }) => {
-  // Through the browser: it carries the pinned lab certificate (launchOptions), the API request context does not.
-  const page = await browser.newPage();
-  await page.goto(`${process.env.LAB_URL ?? "https://patchgate.patchgate-lab.internal:3443"}/api/health`);
-  mfa = (JSON.parse((await page.textContent("body")) ?? "{}") as { mfa?: string }).mfa ?? "required";
-  await page.close();
-});
 const BANK_B = { name: "Bank B", slug: "bank-b" };
 const ENROLL_CODE_RE = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){4}$/;
 
@@ -54,7 +45,7 @@ async function waitForHydratedForm(page: Page): Promise<void> {
  * "Sign-in is temporarily unavailable" — Prisma P2028, the 5 s interactive-transaction timeout in
  * src/lib/auth/local-login.ts. The page says "Please try again", so retry like a user, and record it.
  */
-async function submitStep(page: Page, upn: string, step: "password" | "totp", submit: () => Promise<void>): Promise<void> {
+async function submitStep(page: Page, upn: string, step: "password", submit: () => Promise<void>): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     const res = page.waitForResponse((r) => r.url().endsWith(`/api/auth/${step}`) && r.request().method() === "POST");
     await submit();
@@ -64,71 +55,44 @@ async function submitStep(page: Page, upn: string, step: "password" | "totp", su
   }
 }
 
-/**
- * The real local sign-in form: password → authenticator (enrol on first use, secret read off the page).
- * With AUTH_MFA=off the password step signs in directly (no code).
- */
+/** The real local sign-in form: password only (local sign-in has no second step by design). */
 async function signIn(page: Page, upn: string, shotPrefix?: string): Promise<void> {
   await page.context().clearCookies();
   await page.goto("/login");
   await waitForHydratedForm(page);
   await page.getByLabel("Username").fill(upn);
   await page.getByLabel("Password").fill(labUser(upn).password);
-  const code = page.getByLabel("Verification code");
+  if (shotPrefix) await shot(page, `${shotPrefix}-password`);
   await submitStep(page, upn, "password", async () => page.getByRole("button", { name: "Continue" }).click());
-  if (mfa === "off") {
-    await page.waitForURL((u) => !u.pathname.startsWith("/login"));
-    await page.waitForLoadState("networkidle");
-    return;
-  }
-  await expect(code).toBeVisible();
-  const enrolKey = page.locator("code.select-all");
-  if (await enrolKey.isVisible()) {
-    // First sign-in: mandatory authenticator enrolment. The key shown for manual entry is the TOTP secret.
-    if (shotPrefix) await shot(page, `${shotPrefix}-totp-enrol`);
-    recordTotpSecret(upn, (await enrolKey.textContent()) ?? "");
-  } else if (shotPrefix) {
-    await shot(page, `${shotPrefix}-totp-verify`);
-  }
-  await submitStep(page, upn, "totp", async () => {
-    await code.fill(await freshTotp(upn)); // a fresh 30-s step per attempt (each step is accepted once)
-    await page.getByRole("button", { name: /Verify/ }).click();
-  });
   await page.waitForURL((u) => !u.pathname.startsWith("/login"));
   // The landing page may redirect again (e.g. staff without a bank → /select-bank): let it settle first.
   await page.waitForLoadState("networkidle");
 }
 
-test("platform admin signs in (password, + TOTP when required); the MFA-off warning shows for admins", async ({ page }) => {
+test("platform admin signs in with username + password only (no code step)", async ({ page }) => {
   await page.goto("/login");
   await waitForHydratedForm(page);
   await expect(page.getByLabel("Username")).toBeVisible();
+  await expect(page.getByLabel("Verification code")).toHaveCount(0);
   await shot(page, "01-login");
   await signIn(page, ADMIN, "02-admin");
   await expect(bankSwitcher(page)).toBeVisible(); // bank switcher = PatchGate staff
-  const banner = page.getByTestId("mfa-off-banner");
-  if (mfa === "off") await expect(banner).toContainText("Two-factor sign-in is OFF — turn AUTH_MFA=required on before go-live");
-  else await expect(banner).toHaveCount(0);
   await shot(page, "03-admin-home");
 });
 
-test("wrong TOTP code is refused", async ({ page }) => {
-  test.skip(mfa === "off", "AUTH_MFA=off: there is no code step");
+test("a wrong password is refused with the generic message", async ({ page }) => {
   await page.goto("/login");
   await waitForHydratedForm(page);
   await page.getByLabel("Username").fill(ADMIN);
-  await page.getByLabel("Password").fill(labUser(ADMIN).password);
+  await page.getByLabel("Password").fill("definitely-not-the-password");
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel("Verification code").fill("000000");
-  await page.getByRole("button", { name: /Verify/ }).click();
-  await expect(page.getByText(/code|incorrect|invalid/i).first()).toBeVisible();
+  await expect(page.getByText("Invalid username or password.")).toBeVisible();
   await expect(page).toHaveURL(/\/login/);
 });
 
-test("platform auditor: reads every bank, has no write buttons, no MFA banner, and the API refuses changes", async ({ page }) => {
+test("platform auditor: reads every bank, has no write buttons, and the API refuses changes", async ({ page }) => {
   await signIn(page, AUDITOR, "04-auditor");
   await expect(bankSwitcher(page)).toBeVisible(); // platform staff: may switch the bank it reads
-  await expect(page.getByTestId("mfa-off-banner")).toHaveCount(0); // admins only
   await page.goto("/admin/banks");
   await expect(page.getByText("Read-only view (auditor).")).toBeVisible();
   await expect(page.getByRole("cell", { name: "bank-a", exact: true })).toBeVisible();

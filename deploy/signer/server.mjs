@@ -33,6 +33,8 @@ export const JOB_TYPES = Object.freeze([
   "CACHE_PACKAGE",
   "WU_SCAN",
   "WU_INSTALL",
+  "TACTICAL_AUDIT_SYNC",
+  "TACTICAL_GUARD_SYNC",
 ]);
 export const MAX_JOB_LIFETIME_MS = 72 * 3_600_000;
 export const MAX_CLOCK_SKEW_MS = 5 * 60_000;

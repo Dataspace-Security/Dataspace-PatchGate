@@ -3,14 +3,19 @@ import { withPlatform, withTenant, type Tx } from "@/lib/tenancy";
 import { log } from "@/lib/log";
 import { activeConnectors, type ActiveConnector } from "@/lib/connector/routing";
 import { enqueueJob } from "@/lib/connector/queue";
-import { MAX_AGENTS_PER_JOB, type JobPackage } from "@/lib/connector/protocol";
+import { MAX_AGENTS_PER_JOB, MAX_TACTICAL_AUDIT_EVENTS, type JobPackage } from "@/lib/connector/protocol";
+import { env } from "@/lib/env";
 import { ensurePackageCached } from "@/lib/deploy/connector-cache";
 import { rebuildDiscovered } from "@/lib/discovery/service";
 import { wuScanCab } from "@/lib/winupdate/hooks";
 
 /**
  * Inventory schedules for connector-backed banks (the connector replaces direct Tactical reads):
- *   SYNC_AGENTS  hourly per connector
+ *   SYNC_AGENTS  every AGENT_SYNC_MINUTES (default 15) per connector — one Tactical API call, no PC traffic
+ *   TACTICAL_AUDIT_SYNC every 10 min per connector (Tactical seal: catch-up / backstop of the connector's
+ *                real-time guard, which reads the audit log + approvals itself every ~30 s and pushes them)
+ *   COLLECT (updates only) — only for connectors WITHOUT the real-time guard (older versions, or guard off):
+ *                every 10 min while a human acted in the site's Tactical in the last 2 h (approval drift)
  *   SCAN         daily per PC, batches of ≤ 200 agents
  *   COLLECT      every 6 h per PC (updates + software + agent version), batches of ≤ 200
  *   WU_SCAN      daily per connector when the winupdate pipeline has a verified offline scan catalog
@@ -20,7 +25,13 @@ import { wuScanCab } from "@/lib/winupdate/hooks";
  * never scheduled twice while its result is outstanding.
  */
 
-export const SYNC_INTERVAL_MS = 60 * 60_000;
+/** SYNC_AGENTS interval (AGENT_SYNC_MINUTES, 5..1440, default 15). */
+export function syncIntervalMs(): number {
+  return env().AGENT_SYNC_MINUTES * 60_000;
+}
+export const TACTICAL_AUDIT_INTERVAL_MS = 10 * 60_000;
+/** Connectors without the real-time guard: after out-of-band activity, approvals are re-read this long. */
+export const HUMAN_ACTIVITY_WINDOW_MS = 2 * 60 * 60_000;
 export const RESCAN_INTERVAL_MS = 24 * 60 * 60_000;
 export const COLLECT_INTERVAL_MS = 6 * 60 * 60_000;
 export const WU_SCAN_INTERVAL_MS = 24 * 60 * 60_000;
@@ -34,6 +45,7 @@ const JOB_TTL = {
   SCAN: 6 * 60 * 60_000,
   COLLECT: 6 * 60 * 60_000,
   WU_SCAN: 12 * 60 * 60_000,
+  TACTICAL_AUDIT_SYNC: 30 * 60_000,
 } as const;
 
 export interface ScheduleSummary {
@@ -41,7 +53,91 @@ export interface ScheduleSummary {
   scan: number;
   collect: number;
   wuScan: number;
+  tacticalAudit: number;
+  approvalCheck: number;
   skippedOffline: number;
+}
+
+/** Jobs of a type whose result is still outstanding (queued, delivered, or returned but not yet applied). */
+async function outstanding(tx: Tx, connectorId: string, type: "SYNC_AGENTS" | "TACTICAL_AUDIT_SYNC"): Promise<number> {
+  return tx.connectorJob.count({
+    where: {
+      connectorId,
+      type,
+      OR: [{ status: { in: ["QUEUED", "DELIVERED"] } }, { status: "SUCCEEDED", processedAt: null }],
+    },
+  });
+}
+
+/**
+ * Queue a SYNC_AGENTS job now ("Sync agents now" / "Request scan" on the Endpoints page). De-duplicated: when
+ * one is still outstanding nothing is added. Returns whether a job was queued.
+ */
+export async function requestAgentSync(tx: Tx, c: { id: string; tenantId: string }, now = new Date()): Promise<boolean> {
+  if ((await outstanding(tx, c.id, "SYNC_AGENTS")) > 0) return false;
+  await enqueueJob(tx, { tenantId: c.tenantId, connectorId: c.id, type: "SYNC_AGENTS", payload: {}, expiresAt: new Date(now.getTime() + JOB_TTL.SYNC_AGENTS) }, now);
+  return true;
+}
+
+/** Queue the next Tactical audit-log read for a connector (from its stored cursor). */
+export async function enqueueTacticalAudit(tx: Tx, c: { id: string; tenantId: string }, afterId: number, now: Date): Promise<void> {
+  await enqueueJob(
+    tx,
+    {
+      tenantId: c.tenantId,
+      connectorId: c.id,
+      type: "TACTICAL_AUDIT_SYNC",
+      payload: { afterId: Math.max(0, afterId), limit: MAX_TACTICAL_AUDIT_EVENTS },
+      expiresAt: new Date(now.getTime() + JOB_TTL.TACTICAL_AUDIT_SYNC),
+    },
+    now,
+  );
+}
+
+async function scheduleTacticalAudit(tx: Tx, c: ActiveConnector, now: Date): Promise<number> {
+  if ((await outstanding(tx, c.id, "TACTICAL_AUDIT_SYNC")) > 0) return 0;
+  const recent = await tx.connectorJob.count({
+    where: { connectorId: c.id, type: "TACTICAL_AUDIT_SYNC", createdAt: { gt: new Date(now.getTime() - TACTICAL_AUDIT_INTERVAL_MS) }, status: { not: "CANCELLED" } },
+  });
+  if (recent > 0) return 0;
+  const row = await tx.connector.findFirst({ where: { id: c.id, tenantId: c.tenantId }, select: { tacticalAuditCursor: true } });
+  await enqueueTacticalAudit(tx, c, row?.tacticalAuditCursor ?? 0, now);
+  return 1;
+}
+
+/** The connector's last heartbeat reports an armed real-time guard (protocol §8): it resets foreign approvals itself. */
+export function guardArmed(heartbeat: unknown): boolean {
+  const g = (heartbeat as { guard?: { enabled?: unknown; allowSetKnown?: unknown } } | null)?.guard;
+  return g?.enabled === true && g.allowSetKnown === true;
+}
+
+/**
+ * Fallback for connectors WITHOUT an armed real-time guard (older versions, guard off, allow-set not received):
+ * while a human was active in the site's Tactical (last HUMAN_ACTIVITY_WINDOW_MS), re-read every PC's update
+ * approvals each TACTICAL_AUDIT_INTERVAL_MS: Tactical does not audit approval changes, PatchGate compares them
+ * with its own (approval drift → alert + RESET_APPROVALS, tactical-activity.ts). Updates only: Tactical-server
+ * reads, no PC traffic. With the guard, approvals are checked every ~30 s on the site and this is not needed.
+ */
+async function scheduleApprovalCheck(tx: Tx, c: ActiveConnector, now: Date): Promise<number> {
+  const row = await tx.connector.findFirst({ where: { id: c.id, tenantId: c.tenantId }, select: { tacticalHumanSeenAt: true, heartbeat: true } });
+  if (guardArmed(row?.heartbeat)) return 0;
+  if (!row?.tacticalHumanSeenAt || now.getTime() - row.tacticalHumanSeenAt.getTime() > HUMAN_ACTIVITY_WINDOW_MS) return 0;
+  const recent = await tx.connectorJob.count({
+    where: { connectorId: c.id, type: "COLLECT", createdAt: { gt: new Date(now.getTime() - TACTICAL_AUDIT_INTERVAL_MS) }, payload: { path: ["software"], equals: false } },
+  });
+  if (recent > 0) return 0;
+  const endpoints = await tx.endpoint.findMany({ where: { tenantId: c.tenantId, connectorId: c.id }, orderBy: { id: "asc" }, select: { tacticalAgentId: true } });
+  let jobs = 0;
+  for (let i = 0; i < endpoints.length; i += MAX_AGENTS_PER_JOB) {
+    const agentIds = endpoints.slice(i, i + MAX_AGENTS_PER_JOB).map((e) => e.tacticalAgentId);
+    await enqueueJob(
+      tx,
+      { tenantId: c.tenantId, connectorId: c.id, type: "COLLECT", payload: { agentIds, updates: true, software: false, agent: false }, expiresAt: new Date(now.getTime() + TACTICAL_AUDIT_INTERVAL_MS * 3) },
+      now,
+    );
+    jobs++;
+  }
+  return jobs;
 }
 
 async function scheduleSync(tx: Tx, c: ActiveConnector, now: Date): Promise<number> {
@@ -49,7 +145,7 @@ async function scheduleSync(tx: Tx, c: ActiveConnector, now: Date): Promise<numb
     where: {
       connectorId: c.id,
       type: "SYNC_AGENTS",
-      OR: [{ status: { in: ["QUEUED", "DELIVERED"] } }, { createdAt: { gt: new Date(now.getTime() - SYNC_INTERVAL_MS) }, status: { not: "CANCELLED" } }],
+      OR: [{ status: { in: ["QUEUED", "DELIVERED"] } }, { createdAt: { gt: new Date(now.getTime() - syncIntervalMs()) }, status: { not: "CANCELLED" } }],
     },
   });
   if (recent > 0) return 0;
@@ -128,14 +224,30 @@ export async function enqueueCollect(
   return job.id;
 }
 
+/**
+ * A WU_SCAN asked for with "Request scan of all PCs" is due once the requested agent sync has been applied
+ * (so PCs Tactical just enrolled are included) and no WU_SCAN is outstanding. Order: SYNC_AGENTS → SCAN → WU_SCAN.
+ */
+async function wuScanRequested(tx: Tx, c: ActiveConnector): Promise<Date | null> {
+  const row = await tx.connector.findFirst({ where: { id: c.id, tenantId: c.tenantId }, select: { wuScanRequestedAt: true } });
+  if (!row?.wuScanRequestedAt) return null;
+  if ((await outstanding(tx, c.id, "SYNC_AGENTS")) > 0) return null;
+  const inFlight = await tx.connectorJob.count({ where: { connectorId: c.id, type: "WU_SCAN", status: { in: ["QUEUED", "DELIVERED"] } } });
+  return inFlight > 0 ? null : row.wuScanRequestedAt;
+}
+
 async function scheduleWuScan(tx: Tx, c: ActiveConnector, cab: JobPackage, now: Date): Promise<number> {
-  const recent = await tx.connectorJob.count({
-    where: { connectorId: c.id, type: "WU_SCAN", createdAt: { gt: new Date(now.getTime() - WU_SCAN_INTERVAL_MS) }, status: { not: "CANCELLED" } },
-  });
-  if (recent > 0) return 0;
-  // The site must hold the signed scan catalog before any PC can scan against it.
+  const requested = await wuScanRequested(tx, c);
+  if (!requested) {
+    const recent = await tx.connectorJob.count({
+      where: { connectorId: c.id, type: "WU_SCAN", createdAt: { gt: new Date(now.getTime() - WU_SCAN_INTERVAL_MS) }, status: { not: "CANCELLED" } },
+    });
+    if (recent > 0) return 0;
+  }
+  // The site must hold the signed scan catalog before any PC can scan against it (the request waits for it).
   const cache = await ensurePackageCached(tx, c, cab, now);
   if (cache.state !== "cached") return 0;
+  if (requested) await tx.connector.updateMany({ where: { id: c.id, tenantId: c.tenantId, wuScanRequestedAt: requested }, data: { wuScanRequestedAt: null } });
   const endpoints = await tx.endpoint.findMany({ where: { tenantId: c.tenantId, connectorId: c.id }, orderBy: { id: "asc" }, select: { tacticalAgentId: true } });
   let jobs = 0;
   for (let i = 0; i < endpoints.length; i += MAX_AGENTS_PER_JOB) {
@@ -148,7 +260,7 @@ async function scheduleWuScan(tx: Tx, c: ActiveConnector, cab: JobPackage, now: 
 
 /** Worker step: create the periodic inventory jobs for every online connector. */
 export async function scheduleConnectorInventory(now = new Date()): Promise<ScheduleSummary> {
-  const summary: ScheduleSummary = { sync: 0, scan: 0, collect: 0, wuScan: 0, skippedOffline: 0 };
+  const summary: ScheduleSummary = { sync: 0, scan: 0, collect: 0, wuScan: 0, tacticalAudit: 0, approvalCheck: 0, skippedOffline: 0 };
   for (const c of await activeConnectors(now)) {
     if (!c.online) {
       summary.skippedOffline++;
@@ -163,6 +275,8 @@ export async function scheduleConnectorInventory(now = new Date()): Promise<Sche
           summary.sync += await scheduleSync(tx, c, now);
           summary.scan += await scheduleScan(tx, c, now);
           summary.collect += await scheduleCollect(tx, c, now);
+          summary.tacticalAudit += await scheduleTacticalAudit(tx, c, now);
+          summary.approvalCheck += await scheduleApprovalCheck(tx, c, now);
           const cab = await wuScanCab(tx);
           if (cab) summary.wuScan += await scheduleWuScan(tx, c, cab, now);
         },

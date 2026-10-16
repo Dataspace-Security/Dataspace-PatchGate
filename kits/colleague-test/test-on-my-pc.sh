@@ -3,7 +3,6 @@
 #
 #   ./test-on-my-pc.sh              install everything (about 30-90 minutes), or resume an interrupted run
 #   ./test-on-my-pc.sh --status     containers, URL, connector health
-#   ./test-on-my-pc.sh --code WHO   current 6-digit sign-in code (WHO: an account key from KIT_USERS, e.g. approver)
 #   ./test-on-my-pc.sh --reinstall  erase ONLY this kit (label-checked, asks first; --yes skips) and install fresh
 #   ./test-on-my-pc.sh --cleanup    remove ONLY this kit's containers, network and volumes (logs are kept)
 #
@@ -27,7 +26,7 @@ SITE_DOMAIN="test-bank.pgi.test"
 # ------------------------------------------------------------------ test bank + accounts (THE one place to change)
 # key | sign-in name | display name | role | platform|bank | what it is for
 # The FIRST entry must be the platform ADMIN: the server installer creates it; the others are created through
-# Administration -> Users (real API) and the kit completes their first sign-in (new password + authenticator).
+# Administration -> Users (real API) and the kit completes their first sign-in (new password; sign-in is password-only).
 KIT_BANK="test-bank|Test Bank"                     # slug | name
 KIT_USERS=(   # PatchGate 1.0.0-rc3 role model (platform ADMIN; bank ADMIN / APPROVER / VIEWER)
   "platform-admin|admin@pgi.test|Platform Admin|ADMIN|platform|our team's administrator (all banks); maker of the test change request"
@@ -171,7 +170,7 @@ do_cleanup() {
   echo "(The base image $BASE_IMAGE stays cached: docker image rm $BASE_IMAGE if you want it gone.)"
 }
 
-# ------------------------------------------------------------------ --status / --code
+# ------------------------------------------------------------------ --status
 do_status() {
   load_state
   echo "${B}PatchGate test kit status${N}"
@@ -192,10 +191,6 @@ do_status() {
     echo "  From this PC: https://$DOMAIN$(url_port)/login -> HTTP ${code:-none}"
     [ -f "$LOGINS" ] && echo "  Accounts: $LOGINS"
   fi
-}
-do_code() {
-  running "$SERVER" || die "the kit is not running (./test-on-my-pc.sh)"
-  in_server totp "$1"
 }
 
 # ------------------------------------------------------------------ steps
@@ -325,7 +320,7 @@ server_install() {
 }
 
 accounts() {
-  step "Test bank + accounts through the real admin API (sign-in with password + TOTP)"
+  step "Test bank + accounts through the real admin API (password-only sign-in)"
   select_role_model
   info "role model of the installed release: $ROLE_MODEL"
   if is_done "$SERVER" accounts; then ok "already created"; return; fi
@@ -405,10 +400,7 @@ write_logins() {
     echo "PatchGate $VERSION TEST KIT - sign-in details (KEEP PRIVATE; test accounts only, deleted by --cleanup)"
     echo "URL: https://$DOMAIN$(url_port)/      (hosts line needed: 127.0.0.1 $DOMAIN - see START-HERE.md)"
     echo
-    echo "Every account signs in with password + 6-digit authenticator code. Either:"
-    echo "  - get the current code:   ./test-on-my-pc.sh --code approver      (one of: $(user_keys))"
-    echo "  - or add the TOTP secret / otpauth URI below to an authenticator app (Microsoft/Google Authenticator: 'enter a setup key')."
-    echo "  A code works once: wait for the next one if it is refused."
+    echo "Every account signs in with its sign-in name + password only (no code)."
     echo
     in_server logins 2>/dev/null || echo "(accounts not created yet)"
     if dx "$SITE" test -s /root/kit/tactical-admin-password 2>/dev/null; then
@@ -430,7 +422,7 @@ summary() {
 ${B}==================== PatchGate $VERSION is running on this PC (TEST SETUP) ====================${N}
 
   Open:      https://$DOMAIN$(url_port)/$port_note
-  Logins:    $LOGINS   (passwords + authenticator secrets; current code: ./test-on-my-pc.sh --code <who>)
+  Logins:    $LOGINS   (sign-in names + passwords)
 
   1) Once, as Administrator, add the name to the hosts file. PowerShell (Run as Administrator):
        Add-Content -Path \$env:windir\\System32\\drivers\\etc\\hosts -Value "\`r\`n127.0.0.1 $DOMAIN"
@@ -471,7 +463,7 @@ while [ $# -gt 0 ]; do
     --cleanup) MODE=cleanup; shift ;;
     --reinstall|--fresh) MODE=reinstall; shift ;;
     --status) MODE=status; shift ;;
-    --code|--totp) MODE=code; WHO="${2:-}"; [ -n "$WHO" ] || die "--code needs one of: $(user_keys)"; shift 2 ;;
+    --code|--totp) die "$1 was removed: sign-in is password-only (see logins.txt)" ;;
     --resume) RESUME=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -482,7 +474,6 @@ done
 case "$MODE" in
   cleanup) confirm_erase ""; do_cleanup; exit 0 ;;
   status) do_status; exit 0 ;;
-  code) do_code "$WHO"; exit 0 ;;
 esac
 
 [ -d "$KIT/images" ] && [ -d "$KIT/site-bundle" ] && [ -d "$KIT/product" ] || die "run this from the unpacked kit folder (images/, site-bundle/, product/ missing)"

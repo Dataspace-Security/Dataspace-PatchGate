@@ -9,6 +9,7 @@
 #        curl -fsSL https://<patchgate>/install/site.sh | sudo bash -s -- --code <CODE> --fingerprint <SHA256>
 #      (downloads the bundle over https with the one-time enrolment code and verifies SHA256SUMS first)
 #   C. maintenance:  --status | --upgrade <bundle.tar.gz|dir> | --pc-token [hours] | --uninstall [--purge]
+#                    --break-glass on|off  (emergency dashboard login for tacticaladmin; alerted in PatchGate)
 #   ONLINE variant (site VM with internet): add --online. Public images (Tactical, mongo, redis, postgres,
 #   socat) are pulled from Docker Hub pinned to the exact digests in images/IMAGES.lock (the same bits as the
 #   offline bundle); Docker comes from the official apt repo if missing. Tactical still runs on internal-only
@@ -75,6 +76,7 @@ SKIP_ENROL="${PG_SKIP_ENROL:-0}"
 ONLINE="${PG_ONLINE:-0}"
 LOCKDOWN="${PG_LOCKDOWN:-ask}"         # ask | yes | no   (online mode: restrict VM egress to PatchGate)
 LAN_CIDRS="${PG_LAN_CIDRS:-10.0.0.0/8 172.16.0.0/12 192.168.0.0/16}"
+BREAK_GLASS_STATE=""                     # on | off (--break-glass)
 
 # ------------------------------------------------------------------ output
 if [ -t 1 ]; then C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[1m'; C_0=$'\e[0m'; else C_R=""; C_G=""; C_Y=""; C_B=""; C_0=""; fi
@@ -122,6 +124,9 @@ Options (env var in brackets):
   --skip-enrol              set up Tactical + connector config only (enrol later)   [PG_SKIP_ENROL=1]
   --non-interactive         never ask                                                [PG_NONINTERACTIVE=1]
   --yes                     confirm --purge
+  --break-glass on|off      Tactical is SEALED (no human dashboard login). "on" unblocks the break-glass
+                            account tacticaladmin for an emergency, "off" blocks it again. Both are
+                            written to Tactical's audit log and alerted in PatchGate (RUNBOOK "Tactical is sealed")
 TXT
 }
 
@@ -168,6 +173,7 @@ parse_args() {
       --upgrade) need_val "$@"; MODE=upgrade; BUNDLE_ARG="$2"; shift 2 ;;
       --pc-token) MODE=pctoken; if [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]]; then TOKEN_HOURS="$2"; shift; fi; shift ;;
       --uninstall) MODE=uninstall; shift ;;
+      --break-glass) need_val "$@"; MODE=breakglass; BREAK_GLASS_STATE="$2"; shift 2 ;;
       --purge) PURGE=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown option: $1 (see --help)" ;;
@@ -732,8 +738,10 @@ provision_tactical() {
     docker cp "$SITE_DIR/runtime/endpoint/$s" "trmm-backend:/tmp/pg-scripts/$s" >/dev/null
   done
   docker cp "$SITE_DIR/runtime/tactical/provision-site.py" trmm-backend:/tmp/pg-provision-site.py >/dev/null
-  local args; args="$(printf '{"client":"%s","site":"%s","tokenHours":%s,"rotateKey":%s,"scriptsDir":"/tmp/pg-scripts"}' \
-    "$(json_esc "$CLIENT_NAME")" "$(json_esc "$SITE_NAME")" "$TOKEN_HOURS" "${ROTATE_KEY:-false}")"
+  # Re-provisioning re-seals Tactical; an open break-glass session (state file) is kept open.
+  local keep_bg=false; [ "$(break_glass_state)" = on ] && keep_bg=true
+  local args; args="$(printf '{"client":"%s","site":"%s","tokenHours":%s,"rotateKey":%s,"scriptsDir":"/tmp/pg-scripts","keepBreakGlass":%s}' \
+    "$(json_esc "$CLIENT_NAME")" "$(json_esc "$SITE_NAME")" "$TOKEN_HOURS" "${ROTATE_KEY:-false}" "$keep_bg")"
   printf '%s' "$args" | docker exec -i -u 0 trmm-backend sh -c 'cat > /tmp/pg-provision-args.json && chmod 0644 /tmp/pg-provision-args.json /tmp/pg-provision-site.py && chmod -R a+r /tmp/pg-scripts'
   local out line
   out="$(docker exec -w /opt/tactical/api trmm-backend sh -c 'python manage.py shell < /tmp/pg-provision-site.py' 2>&1 || true)"
@@ -744,7 +752,13 @@ provision_tactical() {
   PROV="$SITE_DIR/state/provision.json"
   ok "service account + API key ($(jfield apiKeyState)), client \"$CLIENT_NAME\" (id $(jfield clientId)), site \"$SITE_NAME\" (id $(jfield siteId))"
   ok "scripts: install=$(jfield installScriptId) wuScan=$(jfield wuScanScriptId) wuInstall=$(jfield wuInstallScriptId); patch policy = manual"
+  ok "Tactical sealed: dashboard login blocked (newly: $(jfield sealBlocked | tr ';' ' ' | sed 's/^$/none/')), other API keys expired: $(jfield sealExpiredApiKeys), agent auto-update $(jfield agentAutoUpdate), break-glass $(jfield breakGlass)"
+  local others; others="$(jfield sealOtherUsers | tr ';' ' ')"
+  if [ -n "${others// /}" ]; then warn "Tactical has other dashboard users (blocked, reported to PatchGate): $others"; fi
 }
+
+# Break-glass state of the sealed Tactical (root-only state file; Tactical itself is the source of truth).
+break_glass_state() { cat "$SITE_DIR/state/break-glass" 2>/dev/null || echo off; }
 PROV=""
 json_esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 jfield() { # key -> value from provision.json (flat JSON of numbers/strings)
@@ -921,7 +935,12 @@ write_pc_kit() {
   step "Bank PC kit (step 3)"
   local pc="$SITE_DIR/pc" agent sha arch
   install -m 0644 "$SITE_DIR/runtime/pc/Install-PatchGateAgent.ps1" "$pc/Install-PatchGateAgent.ps1"
+  # double-click wrapper (older bundles do not have it)
+  if [ -f "$SITE_DIR/runtime/pc/Install-PatchGateAgent.cmd" ]; then install -m 0644 "$SITE_DIR/runtime/pc/Install-PatchGateAgent.cmd" "$pc/Install-PatchGateAgent.cmd"; fi
   install -m 0644 "$SITE_DIR/tls/bank-ca.pem" "$pc/bank-ca.pem"
+  # Optional siteIp (hosts entries on PCs whose DNS lacks the site names): known when the ports bind to one IP.
+  local site_ip_line=""
+  if [ "$BIND_IP" != 0.0.0.0 ]; then site_ip_line="  \"siteIp\": \"$BIND_IP\","; fi
   for arch in amd64 386; do
     agent="tacticalagent-v${AGENT_VERSION}-windows-${arch}.exe"
     [ -f "$SITE_DIR/runtime/agent/$agent" ] && install -m 0644 "$SITE_DIR/runtime/agent/$agent" "$pc/$agent"
@@ -932,7 +951,8 @@ write_pc_kit() {
   local cache; cache="https://pg-cache.$SITE_DOMAIN$( [ "$CACHE_PORT" = 443 ] || printf ":%s" "$CACHE_PORT")/repo"
   ( umask 027
     cat > "$pc/patchgate-pc.json" <<JSON
-{
+{${site_ip_line:+
+$site_ip_line}
   "siteName": "$(json_esc "$SITE_NAME")",
   "tacticalApiUrl": "https://api.$SITE_DOMAIN",
   "cacheUrl": "$cache",
@@ -981,9 +1001,11 @@ TXT
   fi
   if [ "$FIRST_TACTICAL" = 1 ]; then
     term ""
-    term "    Tactical admin 'tacticaladmin' password (shown ONCE, not logged; stored root-only in $SITE_DIR/tactical.env):"
+    term "    Break-glass account 'tacticaladmin' password (shown ONCE, not logged; stored root-only in $SITE_DIR/tactical.env):"
     term "        $(sed -n 's/^TRMM_PASS=//p' "$SITE_DIR/tactical.env")"
-    term "    Sign in at https://rmm.$SITE_DOMAIN and set up two-factor authentication."
+    term "    Tactical is SEALED: its dashboard login is blocked. Patches and installs go through PatchGate only."
+    term "    Emergency only: sudo $SITE_DIR/runtime/install-site.sh --break-glass on   (alerted in PatchGate), then set up"
+    term "    two-factor authentication at https://rmm.$SITE_DOMAIN, and --break-glass off when done."
   fi
 }
 
@@ -1021,6 +1043,7 @@ do_status() {
   local end; end="$(openssl x509 -in "$SITE_DIR/tls/site-cert.pem" -noout -enddate 2>/dev/null | cut -d= -f2)"
   info "site certificate valid until: ${end:-unknown}"
   [ -f "$SITE_DIR/pc/patchgate-pc.json" ] && info "PC install token valid until: $(sed -nE 's/.*"installTokenExpiresAt": *"([^"]+)".*/\1/p' "$SITE_DIR/pc/patchgate-pc.json")"
+  seal_status
 }
 
 do_pc_token() {
@@ -1030,6 +1053,55 @@ do_pc_token() {
   provision_tactical
   write_pc_kit
   ok "new PC install token written to $SITE_DIR/pc/patchgate-pc.json — copy it to the PC share again"
+}
+
+# Run tactical/break-glass.py (on | off | check) in the Tactical backend; prints its PATCHGATE_* result line.
+seal_script() { # state by marker
+  docker cp "$SITE_DIR/runtime/tactical/break-glass.py" trmm-backend:/tmp/pg-break-glass.py >/dev/null
+  printf '{"state":"%s","by":"%s"}' "$1" "$2" | docker exec -i -u 0 trmm-backend sh -c 'cat > /tmp/pg-break-glass-args.json && chmod 0644 /tmp/pg-break-glass-args.json /tmp/pg-break-glass.py'
+  local out
+  out="$(docker exec -w /opt/tactical/api trmm-backend sh -c 'python manage.py shell < /tmp/pg-break-glass.py' 2>&1 || true)"
+  docker exec -u 0 trmm-backend rm -f /tmp/pg-break-glass-args.json /tmp/pg-break-glass.py >/dev/null 2>&1 || true
+  printf '%s\n' "$out" | grep "^$3=" | tail -1 || { printf '%s\n' "$out" | grep -viE 'key|token|pass' | tail -10 | sed 's/^/    /' >&2; return 1; }
+}
+
+do_break_glass() {
+  [ -f "$SITE_DIR/site.env" ] || die "no site installed in $SITE_DIR"
+  case "$BREAK_GLASS_STATE" in on|off) ;; *) die "--break-glass needs on or off" ;; esac
+  docker inspect trmm-backend >/dev/null 2>&1 || die "Tactical is not running"
+  step "Break-glass $BREAK_GLASS_STATE (sealed Tactical)"
+  local by; by="$(printf '%s@%s' "${SUDO_USER:-root}" "$(hostname 2>/dev/null || echo site-vm)" | tr -cd 'A-Za-z0-9@._-')"
+  seal_script "$BREAK_GLASS_STATE" "$by" PATCHGATE_BREAK_GLASS >/dev/null || die "break-glass $BREAK_GLASS_STATE failed"
+  ( umask 077; printf '%s\n' "$BREAK_GLASS_STATE" > "$SITE_DIR/state/break-glass" )
+  logger -t patchgate-site "break-glass $BREAK_GLASS_STATE for tacticaladmin by $by" 2>/dev/null || true
+  if [ "$BREAK_GLASS_STATE" = on ]; then
+    ok "tacticaladmin may sign in at https://rmm.$(TV SITE_DOMAIN) (password: TRMM_PASS in $SITE_DIR/tactical.env, root-only)"
+    warn "PatchGate alerts the bank's and the platform's admins (Tactical activity). Do NOT approve or install patches here; run --break-glass off when done"
+  else
+    ok "tacticaladmin blocked again, its dashboard sessions ended"
+  fi
+  info "recorded in Tactical's audit log -> reported to PatchGate within ~1 minute"
+}
+
+# Read-only sealed-state self-check (--status).
+seal_status() {
+  docker inspect trmm-backend >/dev/null 2>&1 || { warn "Tactical is not running: seal not checked"; return 0; }
+  step "Tactical seal"
+  local line; line="$(seal_script check status PATCHGATE_SEAL_CHECK)" || { warn "seal check failed"; return 0; }
+  PROV="$(mktemp)"; printf '%s\n' "${line#PATCHGATE_SEAL_CHECK=}" > "$PROV"
+  local users="" u bg; bg="$(break_glass_state)"
+  # the break-glass account may be open while break-glass is on; anyone else open = seal broken
+  for u in $(jfield openDashboardUsers | tr ';' ' '); do
+    if [ "$u" = tacticaladmin ] && [ "$bg" = on ]; then continue; fi
+    users="$users $u"
+  done
+  if [ "$bg" = on ]; then warn "break-glass is ON (tacticaladmin can sign in): run --break-glass off when done"; fi
+  if [ -n "$users" ]; then warn "dashboard login OPEN for:$users (re-seal: --pc-token or --upgrade)"; else ok "dashboard login blocked"; fi
+  if [ "$(jfield otherValidApiKeys)" = 0 ]; then ok "no other valid API keys"; else warn "$(jfield otherValidApiKeys) other valid API key(s) in Tactical"; fi
+  if [ "$(jfield nonManualPatchPolicies)" = 0 ]; then ok "every patch policy manual"; else warn "$(jfield nonManualPatchPolicies) patch policy(ies) not manual"; fi
+  if [ "$(jfield agentAutoUpdate)" = off ]; then ok "agent auto-update off (agents upgrade only through PatchGate)"; else warn "agent auto-update is ON in Tactical"; fi
+  if [ "$(jfield svcAuditRead)" = yes ]; then ok "service account can read the audit log"; else warn "service account cannot read the audit log (re-run --pc-token to re-provision)"; fi
+  rm -f "$PROV"; PROV=""
 }
 
 do_uninstall() {
@@ -1077,6 +1149,7 @@ main() {
     status) do_status ;;
     pctoken) do_pc_token ;;
     uninstall) do_uninstall ;;
+    breakglass) do_break_glass ;;
   esac
 }
 

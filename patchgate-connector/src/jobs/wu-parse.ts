@@ -50,6 +50,24 @@ export function extractResultJson(output: string): unknown {
 const failSchema = z.object({ ok: z.literal(false), error: z.string() });
 type ScanAgent = z.infer<(typeof resultSchemas)["WU_SCAN"]>["agents"][number];
 const scanUpdatesSchema = resultSchemas.WU_SCAN.shape.agents.element.shape.updates.unwrap();
+const wuLockSchema = resultSchemas.WU_SCAN.shape.agents.element.shape.wuLock.unwrap();
+export type WuLock = z.infer<typeof wuLockSchema>;
+
+/** The PC's Windows Update lock report (optional, best-effort): clipped to the protocol limits, dropped if malformed. */
+export function parseWuLock(raw: unknown): WuLock | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.locked !== "boolean") return undefined;
+  const issues = (Array.isArray(r.issues) ? r.issues : [])
+    .filter((i): i is string => typeof i === "string" && i.length > 0)
+    .slice(0, 20)
+    .map((i) => i.slice(0, 300));
+  const o = r.lastOutsideInstall as Record<string, unknown> | null | undefined;
+  const lastOutsideInstall =
+    o && typeof o === "object" && typeof o.at === "string" && typeof o.title === "string" ? { at: o.at.slice(0, 40), title: o.title.slice(0, 300) } : null;
+  const parsed = wuLockSchema.safeParse({ locked: r.locked, issues, lastOutsideInstall });
+  return parsed.success ? parsed.data : undefined;
+}
 
 /** Parse one agent's scan output into a WU_SCAN agent entry (errors become a per-agent error). */
 export function parseScanOutput(agentId: string, output: string): ScanAgent {
@@ -59,16 +77,18 @@ export function parseScanOutput(agentId: string, output: string): ScanAgent {
   } catch (err) {
     return { agentId, error: (err as Error).message };
   }
+  const wuLock = parseWuLock((body as { wuLock?: unknown } | null)?.wuLock);
+  const lock = wuLock ? { wuLock } : {};
   const fail = failSchema.safeParse(body);
-  if (fail.success) return { agentId, error: `scan failed on PC: ${fail.data.error}`.slice(0, 2000) };
+  if (fail.success) return { agentId, error: `scan failed on PC: ${fail.data.error}`.slice(0, 2000), ...lock };
   const ok = z.object({ ok: z.literal(true), updates: z.array(z.unknown()).max(5000) }).safeParse(body);
-  if (!ok.success) return { agentId, error: "unexpected scan output" };
+  if (!ok.success) return { agentId, error: "unexpected scan output", ...lock };
   const updates = scanUpdatesSchema.safeParse(ok.data.updates.slice(0, 1000));
   if (!updates.success) {
     const issue = updates.error.issues[0];
-    return { agentId, error: `invalid scan output at ${issue?.path.join(".") ?? "?"}: ${issue?.message ?? "?"}`.slice(0, 2000) };
+    return { agentId, error: `invalid scan output at ${issue?.path.join(".") ?? "?"}: ${issue?.message ?? "?"}`.slice(0, 2000), ...lock };
   }
-  return { agentId, updates: updates.data };
+  return { agentId, updates: updates.data, ...lock };
 }
 
 const installOkSchema = z.object({

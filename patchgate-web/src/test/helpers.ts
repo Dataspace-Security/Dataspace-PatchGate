@@ -13,7 +13,7 @@ export function configureTestEnv(extra: Record<string, string> = {}): void {
     PATCH_REPO_URL: "https://patchgate.test.local/repo",
     AUDIT_HMAC_KEY: "h".repeat(40),
     WORKER_TOKEN: "w".repeat(40),
-    // local sign-in (the production default) needs the TOTP encryption key to be configured
+    // local mode (the production default) needs AUTH_ENC_KEY (encrypts notification webhook URLs at rest)
     AUTH_ENC_KEY: "cd".repeat(32),
     ...extra,
   });
@@ -62,6 +62,7 @@ const TABLES = [
   "NotificationSetting",
   "Notification",
   "ConnectorOutage",
+  "TacticalActivity",
   "SecurityPolicy",
   "Tenant",
 ];

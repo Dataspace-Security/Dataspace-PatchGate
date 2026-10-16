@@ -119,7 +119,6 @@ export interface AccountOverview {
   lastLoginAt: Date | null;
   passwordChangedAt: Date | null;
   hasPassword: boolean;
-  totpEnabled: boolean;
   sessions: AccountSessionView[];
 }
 
@@ -142,7 +141,6 @@ export async function getAccountOverview(userId: string, sessionId: string | nul
     lastLoginAt: user.lastLoginAt,
     passwordChangedAt: user.passwordChangedAt,
     hasPassword: user.passwordHash !== null,
-    totpEnabled: user.totpEnabled,
     sessions: user.sessions.map((s) => ({ current: s.id === sessionId, createdAt: s.createdAt, lastSeenAt: s.lastSeenAt, ip: s.ip, userAgent: s.userAgent })),
   };
 }

@@ -99,6 +99,7 @@ const COMPACT: Partial<Record<JobType, (r: unknown) => Prisma.InputJsonValue>> =
   SYNC_AGENTS: (r) => ({ agents: (r as { agents?: unknown[] }).agents?.length ?? 0 }),
   COLLECT: (r) => ({ agents: (r as { agents?: unknown[] }).agents?.length ?? 0 }),
   WU_SCAN: (r) => ({ agents: (r as { agents?: unknown[] }).agents?.length ?? 0 }),
+  TACTICAL_AUDIT_SYNC: (r) => ({ events: (r as { events?: unknown[] }).events?.length ?? 0, cursor: (r as { cursor?: number }).cursor ?? 0 }),
 };
 
 /**

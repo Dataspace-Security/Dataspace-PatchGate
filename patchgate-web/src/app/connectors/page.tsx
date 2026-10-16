@@ -6,6 +6,10 @@ import { listActiveBanks, listConnectors, listPendingEnrollments, type Connector
 import { ActionButton } from "@/components/action-button";
 import { Alert, Badge, Card, EmptyState, Loading, PageHeader, fmtDate, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
 import { CreateEnrollmentForm, LimitsEditor } from "./connector-admin";
+import { canWrite } from "@/lib/auth/roles";
+import { listTacticalActivity } from "@/lib/connector/tactical-activity";
+import { TacticalActivityCard } from "./tactical-activity";
+import { LiveRefresh } from "@/components/live-refresh";
 
 function fmtBytes(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
@@ -116,13 +120,23 @@ async function ConnectorsView() {
   // Platform auditors see the unused codes list too (hashes only, never a code); only admins create codes.
   const [banks, pending] = admin ? await Promise.all([listActiveBanks(), listPendingEnrollments()]) : platform && isPlatformReader(user) ? [[], await listPendingEnrollments()] : [[], []];
   const offline = rows.filter((c) => c.status === "ACTIVE" && !c.online);
+  // Tactical seal: out-of-band activity (ADMIN + AUDITOR read; ADMIN acknowledges)
+  const activity = await listTacticalActivity(platform ? { kind: "platform" } : { kind: "tenant", tenantId: user.tenantId! });
 
   return (
     <div className="space-y-6">
+      <div className="flex justify-end">
+        <LiveRefresh active={rows.some((c) => c.queuedJobs + c.inFlightJobs > 0)} />
+      </div>
       {admin && <CreateEnrollmentForm banks={banks} />}
       {!admin && (
         <Alert tone="info">
           {platform ? "Read-only (auditor): only platform administrators enrol, limit or revoke connectors." : "Your bank's site connectors (read-only). Contact PatchGate support to enrol a new site."}
+        </Alert>
+      )}
+      {activity.unacknowledged > 0 && (
+        <Alert tone="bad">
+          {activity.unacknowledged} action(s) in a site&apos;s Tactical outside PatchGate — see “Tactical activity” below.
         </Alert>
       )}
       {offline.length > 0 && (
@@ -137,6 +151,7 @@ async function ConnectorsView() {
       ) : (
         <ConnectorsTable rows={rows} canAdmin={admin} showBank={platform} />
       )}
+      {rows.length > 0 && <TacticalActivityCard list={activity} canAck={canWrite(user)} showBank={platform} />}
       {platform && pending.length > 0 && (
         <Card title="Unused enrolment codes" description="Codes are stored as hashes only; they expire 24 h after creation." padded={false}>
           <div className="overflow-x-auto">

@@ -28,6 +28,28 @@ wait_healthy() { # service timeout
 }
 psql_q() { (cd "$D" && "${DC[@]}" exec -T -u postgres db psql -d patchgate -qtAc "$1"); }
 
+# Authenticode root bundle for the fetcher (RUNBOOK §4.4): the two public Microsoft roots shipped in lib/
+# (exported from the Windows trust store), each pinned by the SHA-256 of its DER bytes. Fails closed.
+#   Microsoft Root Certificate Authority 2011: code-signing chain (winget index, Microsoft binaries)
+#   Microsoft Root Certificate Authority 2010: timestamp chain
+CODESIGN_ROOTS=(
+  "microsoft-root-2011.pem 847df6a78497943f27fc72eb93f9a637320a02b561d0a91b09e87a7807ed7c61"
+  "microsoft-root-2010.pem df545bf919a2439c36983b54cdfc903dfa4f37d3996d8d84b4c31eec6f3c163e"
+)
+codesign_bundle() { # out-file
+  local out="$1" tmp entry f want got
+  tmp="$(mktemp)"
+  for entry in "${CODESIGN_ROOTS[@]}"; do
+    f="$K/lib/${entry%% *}"; want="${entry##* }"
+    [ -s "$f" ] || { rm -f "$tmp"; echo "    $f missing (codesign CA bundle)"; exit 1; }
+    got="$(sed -e 's/\r$//' -e '/^-----/d' "$f" | base64 -d | sha256sum | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { rm -f "$tmp"; echo "    $f: SHA-256 $got does not match the pinned $want"; exit 1; }
+    sed 's/\r$//' "$f" >> "$tmp"
+  done
+  install -m 0644 "$tmp" "$out"; rm -f "$tmp"
+  echo "    codesign CA bundle: Microsoft Root 2011 + 2010 (SHA-256 pinned) -> $out"
+}
+
 case "${1:-}" in
   prep-images)
     # The tools image first (the kit's API client and test SIEM run on it, before the installer); the other five
@@ -82,11 +104,12 @@ case "${1:-}" in
     find /root/pg -type f \( -name '*.sh' -o -name '*.conf' -o -name '*.yml' -o -name '*.template' \) -exec sed -i 's/\r$//' {} +
     chmod 0755 /root/pg/installers/server/install-patchgate.sh
     rm -f "$K/secret/admin-temp-password"
+    codesign_bundle "$K/codesign-ca.pem"
     set +e
     cd /root/pg/installers/server && PG_REGISTRY="" ./install-patchgate.sh --non-interactive --domain "$DOMAIN" \
       --admin-email "$ADMIN_UPN" --admin-name "$ADMIN_NAME" --tls self-signed \
       --image-source registry --image-archive "$K/images-installer" --version "$V" --no-firewall \
-      --siem-url "tls://$SIP:6514" --siem-ca "$K/siem/ca.pem" 2>&1 | {
+      --siem-url "tls://$SIP:6514" --siem-ca "$K/siem/ca.pem" --codesign-ca "$K/codesign-ca.pem" 2>&1 | {
         # Line by line (live progress); the line after "Temporary password for" is the one-time password.
         grab=0
         while IFS= read -r line; do
@@ -186,8 +209,7 @@ case "${1:-}" in
   cr-check)
     tools cr-check "$(cat "$K/ring.id")" kit-fixture-windows-1 "$2" ;;
 
-  totp) tools totp "$2" ;;
   check-login) tools check-login "$2" ;;
   logins) tools logins ;;
-  *) echo "usage: server-steps.sh load-images|siem <ip>|siem-status|install <siem-ip>|accounts|bundle|allowlist <ip>|enrol [site]|connector-status|smoke|ps|audit|totp <who>|check-login <who>|logins"; exit 2 ;;
+  *) echo "usage: server-steps.sh load-images|siem <ip>|siem-status|install <siem-ip>|accounts|bundle|allowlist <ip>|enrol [site]|connector-status|smoke|ps|audit|check-login <who>|logins"; exit 2 ;;
 esac

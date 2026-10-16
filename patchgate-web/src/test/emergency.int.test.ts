@@ -186,15 +186,53 @@ describe("bank approval policy", () => {
     await expect(startDeployment(f.maker, TENANT_A, cr.id)).rejects.toThrow(/approval expired/i);
   });
 
-  it("nobody can turn bank approval off (platform rule: at least one bank approver); other policy changes are audited", async () => {
+  it("only an ADMIN (bank or platform) can switch approval; the switch is audited on the bank chain and notifies the admins", async () => {
     const f = await fixture();
     const platformAdmin = await user("root@platform.test", "ADMIN", null);
-    await expect(updateBankPolicy(platformAdmin, TENANT_A, { requireBankApproval: false })).rejects.toThrow(/bank approver is always required/i);
-    await expect(updateBankPolicy(f.bankApprover2, TENANT_A, { requireBankApproval: false })).rejects.toThrow(/bank approver is always required/i);
-    // ...and the database refuses it even for a direct write.
-    await expect(prisma.tenant.update({ where: { id: TENANT_A }, data: { requireBankApproval: false } })).rejects.toThrow(/Tenant_requireBankApproval_always|check constraint/i);
-    await updateBankPolicy(f.bankApprover2, TENANT_A, { requireBankApproval: true, defaultRebootPolicy: "ALWAYS" });
-    expect(await prisma.tenant.findUniqueOrThrow({ where: { id: TENANT_A } })).toMatchObject({ requireBankApproval: true, defaultRebootPolicy: "ALWAYS" });
-    expect(await actions(TENANT_A)).toContain("bank_policy.updated");
+    const auditor = await user("auditor@bank-a.test", "AUDITOR", TENANT_A);
+    await expect(updateBankPolicy(auditor, TENANT_A, { requireBankApproval: false })).rejects.toThrow(/administrators only/i);
+    expect((await prisma.tenant.findUniqueOrThrow({ where: { id: TENANT_A } })).requireBankApproval).toBe(true); // default ON
+
+    await updateBankPolicy(f.bankApprover2, TENANT_A, { requireBankApproval: false, defaultRebootPolicy: "ALWAYS" });
+    expect(await prisma.tenant.findUniqueOrThrow({ where: { id: TENANT_A } })).toMatchObject({ requireBankApproval: false, defaultRebootPolicy: "ALWAYS" });
+    expect(await actions(TENANT_A)).toEqual(expect.arrayContaining(["bank_policy.updated", "bank_policy.approval_switched"]));
+    const notes = await prisma.notification.findMany({ where: { event: "APPROVAL_SETTING_CHANGED", tenantId: TENANT_A } });
+    expect(notes.map((n) => n.target)).toEqual(expect.arrayContaining(["checker1@bank-a.test", "checker2@bank-a.test", "root@platform.test"]));
+    expect(notes.map((n) => n.target)).not.toContain("auditor@bank-a.test");
+    expect(notes[0]?.subject).toMatch(/approval switched OFF/i);
+
+    await updateBankPolicy(platformAdmin, TENANT_A, { requireBankApproval: true });
+    expect((await prisma.tenant.findUniqueOrThrow({ where: { id: TENANT_A } })).requireBankApproval).toBe(true);
+    expect((await actions(TENANT_A)).filter((a) => a === "bank_policy.approval_switched")).toHaveLength(2);
+  });
+
+  it("approval OFF: an admin's request (even an emergency) is auto-approved on submit and deploys without a second person", async () => {
+    const f = await fixture();
+    await updateBankPolicy(f.bankApprover1, TENANT_A, { requireBankApproval: false });
+    const cr = await createChangeRequest(f.maker, TENANT_A, {
+      title: "No second person",
+      ringId: f.ringId,
+      patchIds: [f.patchId],
+      emergency: true,
+      emergencyReason: "Actively exploited remote code execution",
+    });
+    const r = await applyAction(f.maker, TENANT_A, cr.id, "submit");
+    expect(r).toMatchObject({ status: "APPROVED", autoApproved: true, windowBypass: false });
+    const row = await crRow(cr.id);
+    expect(row).toMatchObject({ status: "APPROVED", autoApproved: true, approvedById: null, windowBypass: false, targetCount: 3 });
+    expect(row.approvals).toHaveLength(0);
+    expect(row.decidedAt).not.toBeNull();
+    expect(await actions(cr.id)).toEqual(expect.arrayContaining(["change_request.emergency_submit", "change_request.approval_skipped"]));
+    const skipped = await withTenant(TENANT_A, (tx) => tx.auditEvent.findFirstOrThrow({ where: { entityId: cr.id, action: "change_request.approval_skipped" } }));
+    expect(skipped.tenantId).toBe(TENANT_A);
+    expect(JSON.stringify(skipped.payload)).toMatch(/approval is off/i);
+
+    await startDeployment(f.maker, TENANT_A, cr.id);
+    expect((await crRow(cr.id)).status).toBe("DEPLOYING");
+
+    // Switched back ON: the next request waits for a bank admin again.
+    await updateBankPolicy(f.bankApprover1, TENANT_A, { requireBankApproval: true });
+    const next = await createChangeRequest(f.maker, TENANT_A, { title: "Normal", ringId: f.ringId, patchIds: [f.patchId] });
+    expect(await applyAction(f.maker, TENANT_A, next.id, "submit")).toMatchObject({ status: "PENDING_APPROVAL", autoApproved: false });
   });
 });

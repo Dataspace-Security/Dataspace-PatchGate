@@ -127,6 +127,8 @@ Relative paths are resolved against the config file's directory.
 | `tactical.timeoutMs` | 30000 | Timeout for Tactical calls. |
 | `tactical.statusIntervalSec` | 300 | How often the heartbeat refreshes Tactical reachability and the agent count. |
 | `tactical.maxParallelCalls` | 8 | Parallel Tactical calls inside one SCAN or COLLECT batch. |
+| `tactical.guardIntervalSec` | 30 | Real-time Tactical guard round (protocol §8): reads Tactical's audit log + update approvals, resets approvals PatchGate did not authorise, pushes both to PatchGate. `0` = off (PatchGate's TACTICAL_AUDIT_SYNC / COLLECT backstop only). |
+| `tactical.guardMaxAgentReadsPerTick` | 25 | Cap on `GET /winupdate/<agent>/` reads per guard round (only PCs Tactical flags with pending approvals are read; + one verification read per PC where something was reset). |
 | `cache.baseUrl` | — | URL the PCs use. Passed to the script as `PG_REPO_URL`. Its path (e.g. `/repo`) is the served prefix. Must match `https://host[:port][/path]`. |
 | `cache.listenHost` / `cache.port` | `0.0.0.0` / 8443 | Cache listener. |
 | `cache.tls.certFile` / `keyFile` | — | Required. Certificate from the bank's internal PKI. |

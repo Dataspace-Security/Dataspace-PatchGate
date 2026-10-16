@@ -48,7 +48,7 @@ export async function wuInstallStatus(
       problems.push(`${id}: not in the update catalog`);
       continue;
     }
-    if (u.catalogState === "PENDING") return { state: "wait", reason: "Windows update metadata is still being resolved" };
+    if (u.catalogState === "PENDING") return { state: "wait", reason: "Microsoft Update Catalog lookup still running" };
     if (u.catalogState === "UNRESOLVABLE") {
       problems.push(`${id}: no Microsoft download could be resolved`);
       continue;

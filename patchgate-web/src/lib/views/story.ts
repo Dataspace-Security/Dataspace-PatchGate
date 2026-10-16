@@ -251,7 +251,7 @@ function queuedStage(input: StageInput): Stage {
     const next = input.nextWindowAt ? `Next window starts ${fmtAgo(input.nextWindowAt, input.now)}.` : null;
     return stage("waiting-window", "Waiting for maintenance window", "neutral", next);
   }
-  return stage("queued", "Queued", "neutral", short(note) || null);
+  return stage("queued", "Queued", "neutral", short(note) || "Picked up by PatchGate's next deployment run.");
 }
 
 function sendingStage(input: StageInput): Stage {

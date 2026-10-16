@@ -22,6 +22,14 @@
  * 4. Packages: GET /api/connector/v1/packages/{sha256} → bytes; connector re-hashes before caching.
  * 5. Audit relay: GET /api/connector/v1/audit?after={seq}&limit=500 → this bank's chain records (each with prevHash) + head.
  * 6. Heartbeat: POST /api/connector/v1/heartbeat { version, cacheBaseUrl, cache: {...}, tactical: {...} }
+ * 7. Tactical seal: TACTICAL_AUDIT_SYNC jobs read Tactical's audit log (read-only) and report every action
+ *    NOT done by the service account (dashboard logins, script runs, agent commands, policy/user changes).
+ *    Catch-up / backstop of §8.
+ * 8. Real-time Tactical guard: the connector reads Tactical's audit log and update approvals itself every ~30 s,
+ *    resets every approval PatchGate did not authorise at once and reports both with
+ *    POST /api/connector/v1/tactical-events TacticalPush → { auditCursor, stored }. The allow-set (approvals
+ *    PatchGate authorised) comes from signed DEPLOY_WINDOWS jobs and, after a connector start (heartbeat
+ *    guard.allowSetKnown = false), from signed TACTICAL_GUARD_SYNC jobs; it is never taken from anything unsigned.
  */
 import { createHash, createPrivateKey, createPublicKey, sign, verify, type KeyObject } from "node:crypto";
 import { z } from "zod";
@@ -33,6 +41,15 @@ export const MAX_JOBS_PER_POLL = 20;
 /** A signed job may never be valid for longer than this (limits the value of a stolen/replayed job). */
 export const MAX_JOB_LIFETIME_MS = 72 * 3_600_000;
 export const MAX_AGENTS_PER_JOB = 200;
+/** Tactical audit events in one TACTICAL_AUDIT_SYNC result (more → PatchGate queues the next page at once). */
+export const MAX_TACTICAL_AUDIT_EVENTS = 500;
+/** Real-time guard (§8): bounded pushes and allow-set sync jobs. */
+export const MAX_PUSH_AUDIT_EVENTS = 200;
+export const MAX_PUSH_APPROVAL_RESETS = 200;
+export const MAX_GUARD_SYNC_PARTS = 50;
+export const MAX_GUARD_ALLOW_ENTRIES = 500;
+/** Tactical service account the connector uses (provision-site.py): its own API actions are not out of band. */
+export const TACTICAL_SERVICE_USERNAME = "patchgate-svc";
 export const HEADERS = {
   connector: "x-pg-connector",
   timestamp: "x-pg-timestamp",
@@ -150,6 +167,9 @@ const agentId = z.string().regex(/^[A-Za-z0-9_-]{6,64}$/, "invalid Tactical agen
 const agentIds = z.array(agentId).min(1).max(MAX_AGENTS_PER_JOB);
 const updateGuid = z.string().regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+/** One agent's Windows-update approvals PatchGate authorised (DEPLOY_WINDOWS), until its window ended (ISO). */
+export const guardAllowEntrySchema = z.object({ agentId, guids: z.array(updateGuid).min(1).max(2000), until: z.iso.datetime() }).strict();
+export type GuardAllowEntry = z.infer<typeof guardAllowEntrySchema>;
 const repoPath = z
   .string()
   .max(256)
@@ -201,6 +221,28 @@ export const jobPayloadSchemas = {
       rebootPolicy: z.enum(["NEVER", "IF_REQUIRED", "FORCE"]),
     })
     .strict(),
+  /**
+   * Read Tactical's audit log (read-only) and return the entries with id > afterId that were NOT made by the
+   * service account (oldest first, at most `limit`). PatchGate keeps the cursor; results are idempotent.
+   */
+  TACTICAL_AUDIT_SYNC: z
+    .object({ afterId: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), limit: z.number().int().min(1).max(MAX_TACTICAL_AUDIT_EVENTS) })
+    .strict(),
+  /**
+   * Real-time guard baseline (§8): the approvals PatchGate authorised on this connector's PCs (one entry per PC,
+   * window end `until`; ended windows are kept 7 days so leftovers are withdrawn quietly, not alerted) and its
+   * audit-log cursor. Sent in `parts` jobs sharing `syncId`; the guard resets nothing until it holds every part.
+   */
+  TACTICAL_GUARD_SYNC: z
+    .object({
+      syncId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+      part: z.number().int().min(1).max(MAX_GUARD_SYNC_PARTS),
+      parts: z.number().int().min(1).max(MAX_GUARD_SYNC_PARTS),
+      allow: z.array(guardAllowEntrySchema).max(MAX_GUARD_ALLOW_ENTRIES),
+      auditCursor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    })
+    .strict()
+    .refine((p) => p.part <= p.parts, "part > parts"),
 } as const;
 
 export type JobType = keyof typeof jobPayloadSchemas;
@@ -267,6 +309,10 @@ export const agentInfoSchema = z.object({
   goarch: z.string().max(16).nullish(),
   version: z.string().max(40).nullish(),
   online: z.boolean().nullish(),
+  // Tactical last_seen (ISO 8601, Tactical server clock) and boot_time (epoch seconds, PC clock), passed
+  // through as reported; PatchGate normalises them to UTC and guards clock skew (lib/tactical/agent-times.ts).
+  lastSeen: z.string().max(64).nullish(),
+  bootTime: z.number().nullish(),
 });
 
 export const winUpdateResultSchema = z.object({
@@ -285,6 +331,20 @@ export const softwareResultSchema = z.object({
   publisher: z.string().max(300).nullish(),
   uninstall: z.string().max(2000).nullish(),
 });
+
+/** One Tactical audit-log entry made outside PatchGate (a human, another API key, root on the site VM). */
+export const tacticalAuditEventSchema = z.object({
+  id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER), // Tactical AuditLog primary key
+  ts: z.string().max(64), // Tactical entry_time (ISO 8601)
+  actor: z.string().max(255), // Tactical username
+  action: z.string().max(100), // login, failed_login, execute_script, execute_command, add, modify, delete, ...
+  objectType: z.string().max(100), // user, agent, script, winupdatepolicy, policy, coresettings, ...
+  agentHostname: z.string().max(255).nullable(),
+  agentId: z.string().max(255).nullable(),
+  message: z.string().max(1000).nullable(),
+  ip: z.string().max(64).nullable(),
+});
+export type TacticalAuditEvent = z.infer<typeof tacticalAuditEventSchema>;
 
 export const resultSchemas = {
   SYNC_AGENTS: z.object({ agents: z.array(agentInfoSchema).max(10_000) }),
@@ -329,6 +389,15 @@ export const resultSchemas = {
             .max(1000)
             .optional(),
           error: shortText.optional(),
+          // Optional (added after 1.0.0-rc3): is Windows Update locked so the PC cannot take updates from Microsoft itself?
+          wuLock: z
+            .object({
+              locked: z.boolean(),
+              issues: z.array(z.string().max(300)).max(20),
+              // best-effort: last update Windows installed by itself (not via PatchGate), from the WU history
+              lastOutsideInstall: z.object({ at: z.string().max(40), title: z.string().max(300) }).nullable().optional(),
+            })
+            .optional(),
         }),
       )
       .max(MAX_AGENTS_PER_JOB),
@@ -339,6 +408,16 @@ export const resultSchemas = {
     failed: z.array(z.object({ updateId: z.string(), error: shortText })).max(100),
     rebootRequired: z.boolean(),
   }),
+  TACTICAL_AUDIT_SYNC: z.object({
+    events: z.array(tacticalAuditEventSchema).max(MAX_TACTICAL_AUDIT_EVENTS),
+    // highest Tactical audit id examined (also service-account entries): the next job's afterId
+    cursor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    // more entries after cursor are waiting (PatchGate queues the next page right away)
+    more: z.boolean(),
+    // Tactical's newest id is below afterId: its audit log was reset / purged (reinstall or tampering)
+    reset: z.boolean().optional(),
+  }),
+  TACTICAL_GUARD_SYNC: z.object({ allowEntries: z.number().int().min(0), known: z.boolean() }),
 } as const;
 
 export const jobResultSchema = z.discriminatedUnion("ok", [
@@ -360,6 +439,18 @@ export const heartbeatSchema = z.object({
   cache: z.object({ files: z.number().int().min(0), bytes: z.number().int().min(0), freeBytes: z.number().int().min(0).nullish() }),
   tactical: z.object({ reachable: z.boolean(), agents: z.number().int().min(0).nullish(), error: shortText.nullish() }),
   siem: z.object({ configured: z.boolean(), lastForwardedSeq: z.string().max(24).nullish(), error: shortText.nullish() }).optional(),
+  // Real-time Tactical guard (§8). Optional: older connectors omit it (PatchGate keeps its COLLECT re-checks for them).
+  guard: z
+    .object({
+      enabled: z.boolean(),
+      // false right after a start until every TACTICAL_GUARD_SYNC part arrived: PatchGate queues one
+      allowSetKnown: z.boolean(),
+      intervalSec: z.number().int().min(0).max(3600),
+      lastCheckAt: z.string().max(40).nullish(),
+      resets: z.number().int().min(0),
+      error: shortText.nullish(),
+    })
+    .optional(),
 });
 export type Heartbeat = z.infer<typeof heartbeatSchema>;
 
@@ -368,6 +459,41 @@ export const heartbeatResponseSchema = z.object({
   maxConcurrentInstalls: z.number().int().positive(),
   bandwidthLimitMbps: z.number().int().positive().nullable(),
 });
+
+// ---------------------------------------------------------------------------------------------
+// Real-time Tactical guard push (§8, connector → PatchGate)
+// ---------------------------------------------------------------------------------------------
+
+/** One approval PatchGate did not authorise, found and reset by the connector's guard. */
+export const approvalResetSchema = z.object({
+  agentId,
+  hostname: z.string().max(255).nullable(),
+  guid: z.string().max(64),
+  kb: z.string().max(64).nullable(),
+  title: z.string().max(300).nullable(),
+  detectedAt: z.string().max(64), // ISO, connector clock
+  reset: z.boolean(), // false: Tactical refused the reset (retried every guard tick)
+  error: z.string().max(300).nullable(),
+});
+export type ApprovalReset = z.infer<typeof approvalResetSchema>;
+
+export const tacticalPushSchema = z
+  .object({
+    audit: z
+      .object({
+        afterId: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        events: z.array(tacticalAuditEventSchema).max(MAX_PUSH_AUDIT_EVENTS),
+        cursor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        reset: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    approvalResets: z.array(approvalResetSchema).max(MAX_PUSH_APPROVAL_RESETS).optional(),
+  })
+  .strict();
+export type TacticalPush = z.infer<typeof tacticalPushSchema>;
+
+export const tacticalPushResponseSchema = z.object({ auditCursor: z.number().int().min(0), stored: z.number().int().min(0) });
 
 export const auditRelayResponseSchema = z.object({
   records: z.array(

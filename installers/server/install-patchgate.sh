@@ -49,6 +49,10 @@ DNS_IP="${PG_DNS_IP:-}"
 SIEM_IP="${PG_SIEM_IP:-}"
 SKIP_SMOKE=0
 UPGRADE_VERSION=""
+# Optional nginx host binds/ports (HTTP_BIND/HTTP_PORT/HTTPS_BIND/HTTPS_PORT in .env.production). Used by the
+# all-in-one bank installer (installers/bank/install.sh): its local SNI router owns :443, PatchGate's nginx
+# then listens on e.g. 127.0.0.1:8444. Empty = keep the compose defaults (0.0.0.0:80 / 0.0.0.0:443).
+NGINX_BINDS="HTTP_BIND=${PG_HTTP_BIND:-} HTTP_PORT=${PG_HTTP_PORT:-} HTTPS_BIND=${PG_HTTPS_BIND:-} HTTPS_PORT=${PG_HTTPS_PORT:-}"
 
 STATE_FILE=""   # set after INSTALL_DIR is final
 DEPLOY=""
@@ -256,12 +260,14 @@ our_nginx_running() {
 }
 check_ports() {
   if our_nginx_running; then ok "ports 80/443 are served by PatchGate's own nginx (re-run)"; return; fi
-  local p busy=""
-  for p in 80 443; do
+  local p busy="" hp hsp
+  hp="${PG_HTTP_PORT:-}"; hsp="${PG_HTTPS_PORT:-}"
+  if [ -f "$DEPLOY/.env.production" ]; then hp="${hp:-$(env_get HTTP_PORT)}"; hsp="${hsp:-$(env_get HTTPS_PORT)}"; fi
+  for p in "${hp:-80}" "${hsp:-443}"; do
     if ss -Hltn "sport = :$p" 2>/dev/null | grep -q .; then busy="$busy $p"; fi
   done
   [ -z "$busy" ] || die "port(s)$busy already in use: stop the other service first (ss -ltnp)"
-  ok "ports 80 and 443 are free"
+  ok "ports ${hp:-80} and ${hsp:-443} are free"
 }
 
 check_dns() {
@@ -480,6 +486,7 @@ write_env() {
   fi
   set_image_env
   fit_cpu_limits
+  local nb; for nb in $NGINX_BINDS; do [ -z "${nb#*=}" ] || { env_set "${nb%%=*}" "${nb#*=}"; info "${nb%%=*}=${nb#*=}"; }; done
   if [ "$fresh" = 1 ]; then
     env_set PATCHGATE_HOSTNAME "$DOMAIN"
     env_set PUBLIC_BASE_URL "https://$DOMAIN"
@@ -733,7 +740,7 @@ TXT
   cat <<'TXT'
 
     Next steps (docs/TEAM-GUIDE.md):
-     1. Sign in with the admin e-mail and the temporary password, choose a new password, enrol the authenticator.
+     1. Sign in with the admin e-mail and the temporary password, choose a new password (sign-in is password-only).
      2. Administration -> Banks: create the bank. Connectors -> Add site: copy the one-line site install command.
      3. Escrow deploy/secrets/ offline (two custodians). Set up monitoring (RUNBOOK §8) and a restore drill (§7.3).
 TXT
@@ -827,7 +834,7 @@ do_uninstall() {
   [ -d "$DEPLOY" ] || die "no installation in $INSTALL_DIR"
   step "Uninstall PatchGate"
   if [ "$PURGE" = 1 ]; then
-    warn "--purge deletes the database, package store, secrets (audit/TOTP keys!) and certificates in $INSTALL_DIR"
+    warn "--purge deletes the database, package store, secrets (audit/encryption keys!) and certificates in $INSTALL_DIR"
     if [ "$ASSUME_YES" != 1 ]; then
       [ "$NONINTERACTIVE" != 1 ] && [ -r /dev/tty ] || die "--purge needs --yes in non-interactive mode"
       local a=""; printf '    Type the domain (%s) to confirm: ' "$DOMAIN" >/dev/tty; IFS= read -r a </dev/tty || true

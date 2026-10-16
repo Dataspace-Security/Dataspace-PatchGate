@@ -25,5 +25,11 @@ bash install-patchgate-test.sh
 
 Accounts, start over (`--reinstall`) and cleanup: [kits/colleague-test/START-HERE.md](kits/colleague-test/START-HERE.md)
 
+**One bank, everything on one bank server (one link):** [docs/BANK-INSTALL.md](docs/BANK-INSTALL.md)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dataspace-Security/Dataspace-PatchGate/main/installers/bank/install.sh | sudo bash -s -- --domain bank.local
+```
+
 **Real installation:** [docs/TEAM-GUIDE.md](docs/TEAM-GUIDE.md) (step by step) and [docs/RUNBOOK.md](docs/RUNBOOK.md).
 Version: see [VERSION](VERSION) and [CHANGELOG.md](CHANGELOG.md).

@@ -34,7 +34,7 @@ function BankFields({ draft, onChange }: { draft: BankDraft; onChange: (d: BankD
         />
       </label>
       <p className="text-xs text-muted md:col-span-2">
-        Change requests for this bank always need at least one approver from the bank itself (platform rule).
+        New banks start with approval ON (a bank admin other than the maker approves). An admin can switch it in Settings → Approval policy.
       </p>
     </>
   );
@@ -122,7 +122,7 @@ export function BankRowActions({ bank }: { bank: BankRow }) {
         className="grid gap-3 text-left md:grid-cols-2"
         onSubmit={(e) => {
           e.preventDefault();
-          void patch(draft);
+          void patch({ name: draft.name, slug: draft.slug });
         }}
       >
         <BankFields draft={draft} onChange={setDraft} />

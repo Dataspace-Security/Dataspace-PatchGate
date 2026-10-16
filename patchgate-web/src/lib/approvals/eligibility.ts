@@ -22,7 +22,16 @@ export interface EligiblePatch {
   agentReleases?: readonly AgentReleaseRow[];
   /** THIRD_PARTY only: has the target bank opted in to this app (TenantApp)? undefined = not checked */
   tenantAppEnabled?: boolean;
+  /**
+   * WINDOWS only, banks with windowsUpdateSource=PATCHGATE: why PatchGate cannot deliver it (undefined = OK or
+   * not checked). "not-scanned" = listed by Tactical's own online scan only, no PatchGate offline scan reported it.
+   */
+  winUpdateBlock?: "not-scanned" | "unresolvable";
 }
+
+/** Shown on the Patches page (text after "<title>: ") and returned when a request is refused. */
+export const NEEDS_PATCHGATE_SCAN = "Needs PatchGate scan (found by Tactical only, not by PatchGate's offline Windows Update scan)";
+export const WU_UNRESOLVABLE = "no Microsoft download could be resolved for this update";
 
 /** Checked at create, and again at deploy. Empty array = eligible. */
 export function eligibilityErrors(patches: readonly EligiblePatch[], now: Date): string[] {
@@ -30,6 +39,12 @@ export function eligibilityErrors(patches: readonly EligiblePatch[], now: Date):
   for (const p of patches) {
     if (p.supersededById) {
       errors.push(`${p.title}: superseded by a newer patch`);
+      continue;
+    }
+
+    if (p.kind === "WINDOWS") {
+      if (p.winUpdateBlock === "not-scanned") errors.push(`${p.title}: ${NEEDS_PATCHGATE_SCAN}`);
+      else if (p.winUpdateBlock === "unresolvable") errors.push(`${p.title}: ${WU_UNRESOLVABLE}`);
       continue;
     }
 

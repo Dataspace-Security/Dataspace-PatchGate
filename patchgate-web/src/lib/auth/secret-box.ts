@@ -1,14 +1,14 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 
 /**
- * AES-256-GCM for small secrets at rest (TOTP seeds) with AUTH_ENC_KEY (32 bytes, hex).
+ * AES-256-GCM for small secrets at rest (notification webhook URLs) with AUTH_ENC_KEY (32 bytes, hex).
  *
  * Formats (base64url parts, "." separated):
  *  - "v1.<iv>.<tag>.<ct>.<kid>" (current): kid = 8-hex key id (HMAC of a fixed label under the key — reveals
  *    nothing about the key). The kid is bound into the AAD, so it cannot be stripped or swapped.
  *  - "v1.<iv>.<tag>.<ct>" (legacy, before key ids): still decrypted; the key is found by trial (GCM
  *    authenticates, so a wrong key always fails). The rotation CLI rewrites these in the current format.
- * `aad` binds the ciphertext to its owner (user id): a seed copied onto another account won't decrypt.
+ * `aad` binds the ciphertext to its owner (e.g. the settings scope): a box copied onto another row won't decrypt.
  *
  * Rotation: encrypt ALWAYS with the current key; decrypt with the current or the previous key
  * (AUTH_ENC_KEY_PREVIOUS) — see openSecret / RUNBOOK §9.4.

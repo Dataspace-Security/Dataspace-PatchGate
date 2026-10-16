@@ -10,9 +10,78 @@ signer, egress proxy, backup, site bundle. The connector protocol has its own in
 
 ## [Unreleased]
 
+### Added — real-time Tactical guard (protocol: new job type + connector push, additive)
+- **Out-of-band approvals reset within ~30 seconds** (was: at the next COLLECT, ≤ 6 h / every 10 min for 2 h after
+  human activity). The connector's new Tactical guard (`tactical.guardIntervalSec`, default 30, `0` = off;
+  `tactical.guardMaxAgentReadsPerTick`, default 25) runs on the site: one `GET /agents/` (`has_patches_pending`)
+  + `GET /winupdate/<agent>/` only for PCs with pending approvals (capped per round); an approval PatchGate did not
+  authorise is reset at once (same as `RESET_APPROVALS`, verified by one re-read) and reported. PatchGate's own
+  approvals of an open deployment window are never touched; leftovers of an ended window are withdrawn quietly;
+  nothing is reset while the allow-set is unknown. State in `stateDir/tactical-guard.json` (0600).
+- **Audit log in real time:** the guard reads Tactical's audit log from its own cursor every round and pushes
+  out-of-band entries at once; visible under Connectors → Tactical activity within ~1 minute.
+- **Connector protocol (v1, additive):** `POST /api/connector/v1/tactical-events` `TacticalPush { audit?:
+  { afterId, events ≤ 200, cursor, reset? }, approvalResets?: ≤ 200 }` → `{ auditCursor, stored }` (signed like
+  every connector request, 1 MiB body cap); job type `TACTICAL_GUARD_SYNC` `{ syncId, part, parts ≤ 50, allow ≤ 500
+  entries { agentId, guids, until }, auditCursor }` → `{ allowEntries, known }` (PatchGate signs it when the
+  heartbeat's new optional `guard` status reports `allowSetKnown: false`); signer job-type list updated;
+  migration `20261016180000_tactical_realtime_guard` (enum value). Old connectors: unchanged behaviour (no
+  `guard` in the heartbeat → no sync jobs; PatchGate keeps its COLLECT approval re-checks for them).
+- **PatchGate:** pushes are ingested immediately with the same persistence as before (TacticalActivity source
+  `APPROVAL_GUARD` / `AUDIT_LOG`, `tactical.out_of_band_action` on the bank's chain); `TACTICAL_OUT_OF_BAND` is
+  coalesced (at most one per bank per 5 min; the next alert counts what was coalesced). Connectors page shows
+  "Approval of KB… on DESKTOP-… reset automatically at hh:mm:ss UTC". `TACTICAL_AUDIT_SYNC` and the COLLECT
+  comparison remain as backstop; the 10 min / 2 h approval re-read runs only for connectors without an armed guard.
+
+### Added — approval switch, rollout progress, live pages, correct agent times
+- **Approval on/off per bank** (Settings → Approval policy, "Approval required", default ON). Only an ADMIN (bank
+  or platform) may switch it; audited (`bank_policy.approval_switched`) and notified (new **critical** event
+  `APPROVAL_SETTING_CHANGED` → bank + platform admins). OFF: an admin's change request is approved on submit
+  (`ChangeRequest.autoApproved`, audit `change_request.approval_skipped` with the policy reason) and can be
+  deployed; emergency / two-approver rules apply only while ON. Amber note on the dashboard and change-request
+  pages while OFF. Migration `20261016173000_approval_switch` drops CHECK `Tenant_requireBankApproval_always`.
+- **Deployment progress bar** on the change request (and compact in the list): % finished, succeeded / failed /
+  in progress / queued, endpoints per stage (queued → files downloading / verifying → caching at site →
+  installing → reboot pending → succeeded / failed), derived from deployment status, wait notes and active jobs.
+- **Live pages**: dashboard, change requests (list + detail), endpoints and connectors refresh themselves
+  (`router.refresh`, 5 s while work is active, 30 s idle, paused in hidden tabs; "Live · updated Xs ago").
+  Server-side only; connector polling is unchanged.
+- **Agent times**: SYNC_AGENTS carries Tactical `last_seen` / `boot_time` (protocol v1, additive optional fields
+  `lastSeen`, `bootTime`); PatchGate stores them in UTC (`Endpoint.lastSeenAt` = Tactical's last contact instead of
+  the sync time, new `Endpoint.bootedAt`, migration `20261016173100_endpoint_agent_times`), guards clock skew (a
+  future boot time is "unknown", never "-14543 seconds ago") and shows "seen / booted … ago" on the Endpoints page.
+
+### Added — Tactical is sealed (protocol: new job type, additive)
+- **Sealed site Tactical** (`installers/site/tactical/provision-site.py`, every install/upgrade/`--pc-token`):
+  dashboard login blocked (`block_dashboard_login`) for every Tactical user except `patchgate-svc` and the
+  agent-installer user, their dashboard sessions ended, every other API key expired, every patch policy (not
+  only the default) set to manual, role "PatchGate service" gets `can_view_auditlogs`. `tacticaladmin` is now a
+  break-glass account: `install-site.sh --break-glass on|off` (new `tactical/break-glass.py`, in the site bundle)
+  unblocks / re-blocks it and writes the change to Tactical's audit log. Agent version fixed: Tactical's global
+  agent auto-update (`CoreSettings.agent_auto_update`) turned off; re-enabling it is reported as "AGENT AUTO-UPDATE
+  TURNED ON". `install-site.sh --status` ends with a read-only seal self-check. Official Tactical images, unmodified.
+- **Connector protocol (v1, additive):** job type `TACTICAL_AUDIT_SYNC` `{ afterId, limit ≤ 500 }` → `{ events[],
+  cursor, more, reset? }`; constants `MAX_TACTICAL_AUDIT_EVENTS`, `TACTICAL_SERVICE_USERNAME`. The connector reads
+  `PATCH /logs/audit/` (read-only, newest first, back to the cursor) and returns entries not made by the service
+  account (logins as it are always reported). Old connectors reject the unknown job type: upgrade connectors
+  before (or with) the server; the signer's job-type list includes it.
+- **PatchGate:** `TacticalActivity` table (RLS) + `Connector.tacticalAuditCursor/tacticalHumanSeenAt`
+  (migration `20261016160000_tactical_seal`); every out-of-band entry is stored once, audited as
+  `tactical.out_of_band_action` on the bank's chain and notified (new **critical** event `TACTICAL_OUT_OF_BAND`
+  → platform + bank admins). Approval drift: update approvals PatchGate did not set (Tactical does not audit
+  them) are found on every COLLECT page, alerted and reset with `RESET_APPROVALS` when no PatchGate deployment
+  is in flight on that PC (now the backstop of the real-time guard above). Connectors page:
+  "Tactical activity" list with a red badge; ADMIN acknowledges (`tactical.activity_acknowledged`), AUDITOR reads.
+- **Endpoints page for connector banks:** "Sync agents now" queues `SYNC_AGENTS` at once (de-duplicated,
+  audited `endpoints.sync_requested`); "Request scan of all PCs" syncs first, marks every PC due and — for
+  `windowsUpdateSource=PATCHGATE` — requests a `WU_SCAN` that runs after the sync once the verified scan catalog
+  is cached at the site (migration `20261016161000_connector_scan_request`, `Connector.wuScanRequestedAt`);
+  the button shows what happens ("Syncing PCs from Tactical, then scanning …", catalog still downloading).
+  Periodic `SYNC_AGENTS` every 15 min instead of hourly (`AGENT_SYNC_MINUTES`, 5–1440).
+
 ### Changed
 - **User accounts are managed only by PatchGate platform admins.** Creating users, editing name / role / active,
-  resetting password or MFA and unlocking now return 403 ("Accounts are managed by PatchGate platform
+  resetting a password and unlocking now return 403 ("Accounts are managed by PatchGate platform
   administrators") for bank admins and bank auditors; they keep a read-only list of their own bank's users
   (/admin/users shows no form and no row actions). Platform admins create the bank's admins and auditors
   (Admin → Users or `create-user.ts --tenant`). Closes the maker-checker gap where a bank admin could create a
@@ -30,10 +99,18 @@ signer, egress proxy, backup, site bundle. The connector protocol has its own in
   makers (former operators) become auditors — give them `ADMIN` again if they must keep raising requests.**
   `OIDC_ROLE_MAP` accepts only
   `ADMIN` / `AUDITOR`; `create-user.ts --role ADMIN|AUDITOR`.
-- **`AUTH_MFA=required|off`** (default `required`): `off` = local sign-in with the password only (stored TOTP
-  secrets kept; temporary-password change, lockout and session rules unchanged). While off: banner for admins,
-  `mfa:"off"` on `/api/health`, `checks.mfa=false` on `/api/ready`, warning on /operations, audit
-  `auth.mfa_disabled` (platform chain) at every process start. Must be `required` for go-live.
+- **TOTP removed: local sign-in is password-only by design.** No 6-digit code, no authenticator enrolment / QR
+  code, no "Reset MFA" admin action (`reset-mfa`, notification `MFA_RESET`, audit `user.mfa_reset` /
+  `auth.mfa_enrolled`), no `POST /api/auth/totp`. The short-lived `AUTH_MFA` switch is gone with it (env var,
+  admin banner, `/api/health` `mfa`, `/api/ready` `checks.mfa`, /operations note, audit `auth.mfa_disabled`).
+  Strong passwords (scrypt, ≥ 14 chars), lockout, temporary-password change, password max age, inactivity disable
+  and session rules are unchanged; `auth.login` records `method: "password"`. Banks that need MFA use their SSO
+  (`AUTH_MODE=oidc`), where the IdP enforces it. Migration `20261016170000_remove_totp` drops
+  `User.totpSecretEnc` / `totpEnabled` / `totpLastStep` and `AuthChallenge.pendingSecretEnc` and deletes pending
+  TOTP sign-in steps. The sign-in challenge cookie is now `__Host-pg_challenge` (was `__Host-pg_mfa`; a sign-in
+  in progress during the upgrade restarts). `AUTH_ENC_KEY` stays (it seals notification webhook URLs); the
+  rotation CLI now reports webhook rows only. Lab / colleague kit: `--code` / `pg-api.mjs totp` removed,
+  `lab-users.json` holds password, role and bank only. Dependency `qrcode` removed.
 - Simpler navigation: rings, maintenance windows, approval policy, notifications and account security are one
   **Advanced settings** group; reboot policy and emergency change are under **Advanced options** on the change
   request form / draft. No behaviour or default changed.
@@ -53,6 +130,44 @@ signer, egress proxy, backup, site bundle. The connector protocol has its own in
   alone matched. A timestamp that is present but does not verify now fails the file.
 - Server installer: the post-install smoke test waits up to 3 min (`SMOKE_WAIT_SIEM=180`) for the first SIEM
   audit export instead of failing `siemExport`; with the placeholder SIEM it reports WARN, not FAIL.
+
+### Added (Windows Update lock, deliverable Windows patches)
+- **Windows Update locked by PatchGate on bank PCs.** `Install-PatchGateAgent.ps1` now sets (at every run, also
+  when the agent is already installed; `-SkipWuLock` to opt out) the Windows Update policies that stop the PC
+  from taking updates from Microsoft itself: `UseWUServer=1` with `WUServer`/`WUStatusServer`
+  `http://patchgate-wu-locked.invalid`, `DoNotConnectToWindowsUpdateInternetLocations=1`, `NoAutoUpdate=1`,
+  `DisableDualScan=1`, `SetPolicyDrivenUpdateSourceFor*Updates=1` + `UseUpdateClassPolicySource=1`,
+  `ExcludeWUDriversInQualityUpdate=1`, `SetDisableUXWUAccess=1`; Defender `FallbackOrder=InternalDefinitionUpdateServer`
+  (`-AllowDefenderDefinitionUpdates` = `MMPC`); `wuauserv` stays Manual. This also blocks Tactical's own online
+  "Run Update Scan" / "Install Approved Updates". The offline scan (scan package service) and `wusa`/DISM
+  installs are unaffected by design (to be confirmed on the first lab PC). RUNBOOK §6.2 (values, GPO equivalent,
+  Defender trade-off), TEAM-GUIDE step 3.
+- **Lock detection + alert.** `Invoke-PatchGateWuScan.ps1` reports `wuLock {locked, issues, lastOutsideInstall}`
+  (best-effort WU history) with every WU_SCAN result. **Protocol (additive, PROTOCOL_VERSION unchanged):** optional
+  `wuLock` on each `WU_SCAN` result agent. Migration `20261016151000_endpoint_wu_lock` (`Endpoint.wuLocked`,
+  `wuLockCheckedAt`, `wuLockDetail`). Endpoints page: "Windows Update" column (locked / NOT locked, problems on
+  hover) + banner. Locked → NOT locked (or first report NOT locked): audit `endpoint.wu_lock_broken` on the bank
+  chain and one new `WU_LOCK_BROKEN` notification (warning, bank + platform admins, webhooks) per scan result;
+  `endpoint.wu_lock_restored` when locked again. **Re-register (and re-sign) the scan script in Tactical.**
+- **PC install in one step:** double-click `installers/pc/Install-PatchGateAgent.cmd` (self-elevates, runs the
+  script with the `patchgate-pc.json` next to it; the script also defaults to that file). New optional JSON fields
+  `siteIp` and `hostNames`: hosts entries only for names DNS does not resolve (no `-SiteIp` needed). Self-test
+  before installing: Tactical API + package cache reachable with a trusted certificate (exit 4 otherwise). Last
+  line `OK - PC enrolled, will appear in PatchGate within minutes` / `FAILED - <reason>`.
+- PC installer: the hosts-file update writes all missing names in one append and retries up to 10 times when
+  another process holds the file (Defender, an editor); if it still fails it prints the exact lines to add and
+  continues when the names already resolve (exit 1 only when they do not).
+- **Windows patches PatchGate cannot deliver are not selectable** (banks with `windowsUpdateSource=PATCHGATE`):
+  a patch listed only by Tactical's own online scan (no PatchGate offline-scan evidence, no `WinUpdate` row) shows
+  "Needs PatchGate scan" on the Patches page; creating, submitting and starting a change request with it is
+  refused (422/409) instead of failing at deployment after maker + checker approval. Same for updates whose
+  Microsoft download is UNRESOLVABLE.
+- Deployment wait notes are clearer: "files in quarantine until <time> UTC", "Microsoft files still downloading /
+  being verified", "Microsoft Update Catalog lookup still running" (without the trailing "— waiting"); a queued
+  deployment without a note says it is picked up by the next deployment run.
+- Colleague test kit: the server install gets `--codesign-ca` with *Microsoft Root Certificate Authority 2011* +
+  *2010* (public certificates in `kits/colleague-test/lib/`, SHA-256 pinned, fails closed) so the third-party
+  catalogue verifies in the kit.
 
 ## [1.0.0-rc3] - 2026-10-16
 

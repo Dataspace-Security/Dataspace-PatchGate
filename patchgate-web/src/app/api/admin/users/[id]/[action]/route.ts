@@ -2,7 +2,7 @@ import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/ses
 import { fail, handle, ok } from "@/lib/api/response";
 import { requireAccountManager, userAction, userActionSchema } from "@/lib/auth/admin-service";
 
-/** POST /api/admin/users/:id/reset-password | reset-mfa | unlock */
+/** POST /api/admin/users/:id/reset-password | unlock */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string; action: string }> }): Promise<Response> {
   return handle(async () => {
     const { id, action } = await ctx.params;

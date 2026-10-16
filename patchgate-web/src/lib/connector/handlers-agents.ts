@@ -3,6 +3,7 @@ import type { z } from "zod";
 import { appendAudit } from "@/lib/audit/service";
 import { withTenant } from "@/lib/tenancy";
 import { log } from "@/lib/log";
+import { agentTimes } from "@/lib/tactical/agent-times";
 import type { resultSchemas } from "./protocol";
 import type { StoredJob } from "./handlers";
 
@@ -33,6 +34,7 @@ export interface SyncSummary {
 }
 
 const nn = (v: string | null | undefined): string | null => (v === undefined || v === null || v === "" ? null : v);
+const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
 async function syncChunk(tenantId: string, connectorId: string, agents: readonly AgentInfo[], now: Date) {
   return withTenant(
@@ -46,6 +48,8 @@ async function syncChunk(tenantId: string, connectorId: string, agents: readonly
       const known = new Map(existing.map((e) => [e.tacticalAgentId, e.connectorId]));
       const moved = existing.filter((e) => e.connectorId !== null && e.connectorId !== connectorId).map((e) => e.tacticalAgentId);
 
+      // Tactical last_seen / boot_time → UTC, clock skew guarded (never "-14543 seconds ago").
+      const times = new Map(agents.map((a) => [a.agentId, agentTimes({ lastSeen: a.lastSeen, bootTime: a.bootTime, online: a.online }, now)]));
       const upd = agents.filter((a) => known.has(a.agentId));
       if (upd.length > 0) {
         // One statement per chunk instead of one UPDATE per PC (sites have thousands of agents).
@@ -58,12 +62,14 @@ async function syncChunk(tenantId: string, connectorId: string, agents: readonly
                  "agentVersion" = COALESCE(v.version, e."agentVersion"),
                  "goarch" = COALESCE(v.goarch, e."goarch"),
                  "connectorId" = ${connectorId},
-                 "lastSeenAt" = ${now},
+                 "lastSeenAt" = COALESCE(v.last_seen::timestamptz AT TIME ZONE 'UTC', e."lastSeenAt"),
+                 "bootedAt" = v.booted_at::timestamptz AT TIME ZONE 'UTC',
                  "updatedAt" = ${now}
             FROM unnest(${upd.map((a) => a.agentId)}::text[], ${upd.map((a) => a.hostname)}::text[], ${upd.map((a) => nn(a.site))}::text[],
                         ${upd.map((a) => nn(a.client))}::text[], ${upd.map((a) => nn(a.os))}::text[], ${upd.map((a) => nn(a.version))}::text[],
-                        ${upd.map((a) => nn(a.goarch))}::text[])
-                 AS v(agent_id, hostname, site, client, os, version, goarch)
+                        ${upd.map((a) => nn(a.goarch))}::text[], ${upd.map((a) => iso(times.get(a.agentId)?.lastSeenAt ?? null))}::text[],
+                        ${upd.map((a) => iso(times.get(a.agentId)?.bootedAt ?? null))}::text[])
+                 AS v(agent_id, hostname, site, client, os, version, goarch, last_seen, booted_at)
            WHERE e."tenantId" = ${tenantId} AND e."tacticalAgentId" = v.agent_id`;
       }
 
@@ -81,7 +87,8 @@ async function syncChunk(tenantId: string, connectorId: string, agents: readonly
             osName: nn(a.os),
             agentVersion: nn(a.version),
             goarch: nn(a.goarch),
-            lastSeenAt: now,
+            lastSeenAt: times.get(a.agentId)?.lastSeenAt ?? null,
+            bootedAt: times.get(a.agentId)?.bootedAt ?? null,
           })),
           skipDuplicates: true, // an id owned by another bank is skipped, never taken over
         });

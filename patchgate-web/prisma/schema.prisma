@@ -109,8 +109,9 @@ model Tenant {
   slug                String              @unique // short code, e.g. "bank-a"
   name                String
   active              Boolean             @default(true)
-  // Maker-checker: every change request for this bank needs at least one approver FROM this bank. Always
-  // true (platform rule; DB CHECK "Tenant_requireBankApproval_always", migration 20261016130000).
+  // "Approval required" (default ON). ON: every change request needs an approving admin FROM this bank
+  // (never the maker). OFF: an admin's request is auto-approved on submit (no second person; audited as
+  // change_request.approval_skipped). Only an ADMIN can switch it (audited + notified; migration 20261016173000).
   requireBankApproval Boolean             @default(true)
   // Where this bank's PCs get Windows updates: PATCHGATE = offline scan + cached Microsoft files via the
   // connector (no WSUS, no internet); WSUS = the bank's own WSUS, PatchGate only approves (legacy).
@@ -149,13 +150,10 @@ model User {
   role               UserRole  @default(AUDITOR)
   // null = our team (sees all banks); otherwise the user's bank (sees only that bank)
   tenantId           String?
-  // ---- Local login (password + TOTP) ----
+  // ---- Local login (password only, by design; banks needing MFA use their SSO) ----
   passwordHash       String? // scrypt$N$r$p$salt$hash
   passwordChangedAt  DateTime?
   mustChangePassword Boolean   @default(false)
-  totpSecretEnc      String? // AES-256-GCM(secret) with AUTH_ENC_KEY
-  totpEnabled        Boolean   @default(false)
-  totpLastStep       Int? // last accepted 30-s step: a code can be used only once
   failedLogins       Int       @default(0)
   lockedUntil        DateTime?
   // Local kill switch: false blocks sign-in even if the IdP still grants a role.
@@ -174,17 +172,15 @@ model User {
   @@index([tenantId])
 }
 
-// Password accepted, second factor pending (5 min, single use, attempt-limited). Cookie holds the token.
+// Password accepted, new password pending (5 min, single use, attempt-limited). Cookie holds the token.
 model AuthChallenge {
-  id               String   @id // sha256(token), hex
-  userId           String
-  // ENROLL: user has no TOTP yet — pendingSecretEnc is the secret being set up
-  kind             String // "VERIFY" | "ENROLL"
-  pendingSecretEnc String?
-  attempts         Int      @default(0)
-  returnTo         String   @default("/")
-  expiresAt        DateTime
-  createdAt        DateTime @default(now())
+  id        String   @id // sha256(token), hex
+  userId    String
+  kind      String // "PASSWORD" (forced password change: temporary or expired password)
+  attempts  Int      @default(0)
+  returnTo  String   @default("/")
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 
   @@index([expiresAt])
 }
@@ -274,13 +270,22 @@ model Endpoint {
   lastScanRequestedAt DateTime?
   // last ingest attempt (success or failure) so unreachable PCs do not starve the queue
   ingestAttemptAt     DateTime?
+  // Last contact of the Tactical agent (Tactical "last_seen", UTC; clamped to the sync time on clock skew).
   lastSeenAt          DateTime?
+  // When the PC last booted (Tactical "boot_time", UTC); null = unknown / implausible (migration 20261016173100).
+  bootedAt            DateTime?
   // Windows updates installed through PatchGate (WU_INSTALL) that need a restart to complete
   rebootRequired      Boolean   @default(false)
   rebootRequiredAt    DateTime?
   // Last offline Windows Update scan (WU_SCAN) result for this PC
   lastWuScanAt        DateTime?
   lastWuScanError     String?
+  // Windows Update lock (reported by WU_SCAN): true = the PC cannot take updates from Microsoft by itself,
+  // false = NOT locked (see wuLockDetail.issues), null = never reported
+  wuLocked            Boolean?
+  wuLockCheckedAt     DateTime?
+  // { issues: string[], lastOutsideInstall: { at, title } | null }
+  wuLockDetail        Json?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -382,6 +387,8 @@ model ChangeRequest {
   approvalExpiresAt DateTime?
   windowBypass      Boolean             @default(false)
   bypassedWindowId  String?
+  // Submitted while the bank's approval was OFF: approved on submit without a checker (migration 20261016173000).
+  autoApproved      Boolean             @default(false)
 
   ring        Ring                    @relation(fields: [ringId], references: [id])
   window      MaintenanceWindow?      @relation(fields: [windowId], references: [id])
@@ -737,6 +744,12 @@ model Connector {
   standbyOf             String? // HA: standby of another connector at the same site
   // Last heartbeat body (cache size, Tactical reachability, agent count, SIEM relay) for the health views
   heartbeat             Json?
+  // Tactical seal: highest Tactical audit-log id already examined (TACTICAL_AUDIT_SYNC cursor)
+  tacticalAuditCursor   Int             @default(0)
+  // Last out-of-band (human) Tactical activity: approvals are re-checked often while it is recent
+  tacticalHumanSeenAt   DateTime?
+  // "Request scan of all PCs": a WU_SCAN is due after the requested agent sync (cleared when queued)
+  wuScanRequestedAt     DateTime?
 
   tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   endpoints Endpoint[]
@@ -781,6 +794,8 @@ enum ConnectorJobType {
   CACHE_PACKAGE
   WU_SCAN
   WU_INSTALL
+  TACTICAL_AUDIT_SYNC
+  TACTICAL_GUARD_SYNC
 }
 
 enum ConnectorJobStatus {
@@ -1008,6 +1023,32 @@ model NotificationAlert {
 
 // Connector offline episodes (> 10 min without heartbeat): drives offline/online notifications and the
 // connector uptime figures of compliance reports.
+// Tactical seal: an action at a bank site's Tactical that PatchGate did not make (Tactical audit log entry
+// of a human / other API key, or an update approval PatchGate never set). Tenant-owned (RLS).
+model TacticalActivity {
+  id             String    @id @default(cuid())
+  tenantId       String // owning bank (row-level security key)
+  connectorId    String
+  source         String // AUDIT_LOG | APPROVAL_GUARD | APPROVAL_DRIFT | AUDIT_RESET
+  dedupeKey      String // idempotency per connector (Tactical id + time, or agent + guids + day)
+  tacticalId     Int? // Tactical AuditLog id (AUDIT_LOG)
+  occurredAt     DateTime
+  actor          String
+  action         String
+  objectType     String
+  agentHostname  String?
+  agentId        String?
+  message        String?
+  ip             String?
+  receivedAt     DateTime  @default(now())
+  acknowledgedAt DateTime?
+  acknowledgedBy String?
+
+  @@unique([connectorId, dedupeKey])
+  @@index([tenantId, receivedAt])
+  @@index([tenantId, acknowledgedAt])
+}
+
 model ConnectorOutage {
   id          String    @id @default(cuid())
   tenantId    String // owning bank (row-level security key)

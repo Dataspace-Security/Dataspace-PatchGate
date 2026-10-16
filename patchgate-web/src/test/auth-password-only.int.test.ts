@@ -1,23 +1,20 @@
 /**
- * AUTH_MFA=off: local sign-in is password only (no TOTP step, no forced enrolment); stored TOTP secrets are
- * untouched; temporary-password change, lockout and session rules still apply; one `auth.mfa_disabled`
- * event per process on the platform chain. (AUTH_MFA=required keeps the TOTP step: auth-local.int.test.ts.)
- * Run: TEST_DATABASE_URL=postgresql://…/patchgate_test_auth INTEGRATION=1 npx vitest run src/test/auth-mfa-off.int.test.ts
+ * Local sign-in is PASSWORD-ONLY by design (TOTP removed, migration 20261016170000_remove_totp): no second
+ * step, no authenticator columns in the database; temporary-password change, lockout and session rules still
+ * apply. Banks that need MFA use their SSO (AUTH_MODE=oidc), where the IdP enforces it.
+ * Run: TEST_DATABASE_URL=postgresql://…/patchgate_test_auth INTEGRATION=1 npx vitest run src/test/auth-password-only.int.test.ts
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { configureTestEnv, resetDb } from "./helpers";
 
-configureTestEnv({ AUTH_MODE: "local", AUTH_MFA: "off", AUTH_ENC_KEY: "ab".repeat(32) });
+configureTestEnv({ AUTH_MODE: "local", AUTH_ENC_KEY: "ab".repeat(32) });
 
 const { prisma } = await import("@/lib/db");
-const { beginPasswordLogin, verifyTotpStep, changePasswordStep, LOGIN_ERROR } = await import("@/lib/auth/local-login");
-const { createUser, createTenant } = await import("@/lib/auth/admin-service");
+const localLogin = await import("@/lib/auth/local-login");
+const { beginPasswordLogin, changePasswordStep, LOGIN_ERROR, LOCAL_LOGIN_METHOD } = localLogin;
+const { createUser, createTenant, userActionSchema } = await import("@/lib/auth/admin-service");
 const { hashPassword } = await import("@/lib/auth/password");
-const { encryptSecret } = await import("@/lib/auth/secret-box");
-const { announceMfaDisabledOnce, MFA_DISABLED_ACTION } = await import("@/lib/auth/mfa-status");
-const { mfaDisabled, mfaRequired } = await import("@/lib/env");
 const { readiness } = await import("@/lib/health");
-const { verifyAuditLog } = await import("@/lib/audit/service");
 type LoginStep = import("@/lib/auth/local-login").LoginStep;
 type SessionUser = import("@/lib/auth/session").SessionUser;
 
@@ -42,32 +39,32 @@ async function root(): Promise<SessionUser> {
   return { id: u.id, role: u.role, upn: u.upn, name: u.name, tenantId: null };
 }
 
-describe("AUTH_MFA=off", () => {
-  it("is reported as off (env helpers, readiness)", async () => {
-    expect(mfaRequired()).toBe(false);
-    expect(mfaDisabled()).toBe(true);
-    expect((await readiness()).checks.mfa).toBe(false);
-  });
-
-  it("password only → session; the login is recorded as method=password; no authenticator is enrolled", async () => {
+describe("password-only local sign-in", () => {
+  it("the right password → session at once; recorded as method=password; no pending step", async () => {
     const admin = await root();
     const r = expectStep(await beginPasswordLogin({ upn: admin.upn, password: STRONG, returnTo: "/patches" }, META), "done");
     expect(r.returnTo).toBe("/patches");
     expect(await prisma.session.count({ where: { userId: admin.id } })).toBe(1);
-    const login = await prisma.auditEvent.findFirstOrThrow({ where: { action: "auth.login", entityId: admin.id } });
-    expect(login.payload).toMatchObject({ method: "password" });
-    const u = await prisma.user.findUniqueOrThrow({ where: { id: admin.id } });
-    expect([u.totpEnabled, u.totpSecretEnc]).toEqual([false, null]);
     expect(await prisma.authChallenge.count()).toBe(0);
+    const login = await prisma.auditEvent.findFirstOrThrow({ where: { action: "auth.login", entityId: admin.id } });
+    expect(LOCAL_LOGIN_METHOD).toBe("password");
+    expect(login.payload).toMatchObject({ method: "password" });
   });
 
-  it("keeps an existing TOTP secret untouched (switching back to required works at once)", async () => {
-    const admin = await root();
-    const secretEnc = encryptSecret(Buffer.alloc(20, 7), "ab".repeat(32), admin.id);
-    await prisma.user.update({ where: { id: admin.id }, data: { totpSecretEnc: secretEnc, totpEnabled: true, totpLastStep: 42 } });
-    expectStep(await beginPasswordLogin({ upn: admin.upn, password: STRONG }, META), "done");
-    const u = await prisma.user.findUniqueOrThrow({ where: { id: admin.id } });
-    expect([u.totpSecretEnc, u.totpEnabled, u.totpLastStep]).toEqual([secretEnc, true, 42]);
+  it("exposes no TOTP step, no MFA reset action and no MFA readiness check", async () => {
+    expect(Object.keys(localLogin).filter((k) => /totp|mfa|enrol/i.test(k))).toEqual([]);
+    expect(userActionSchema.safeParse({ action: "reset-mfa" }).success).toBe(false);
+    expect(userActionSchema.shape.action.options).toEqual(["reset-password", "unlock"]);
+    expect((await readiness()).checks).not.toHaveProperty("mfa");
+  });
+
+  it("the database has no authenticator columns and only password-change challenges", async () => {
+    const cols = await prisma.$queryRaw<{ table_name: string; column_name: string }[]>`
+      SELECT table_name, column_name FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name IN ('User', 'AuthChallenge')`;
+    const names = cols.map((c) => `${c.table_name}.${c.column_name}`);
+    expect(names).toContain("User.passwordHash");
+    expect(names.filter((n) => /totp|pendingSecret/i.test(n))).toEqual([]);
   });
 
   it("a temporary password must still be changed before the session is issued", async () => {
@@ -80,9 +77,6 @@ describe("AUTH_MFA=off", () => {
     const u = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     expect(u.mustChangePassword).toBe(false);
     expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
-    // the TOTP endpoint has nothing to verify while MFA is off
-    const totp = await verifyTotpStep(ch.challengeToken, "123456", META);
-    expect(totp.ok).toBe(false);
   });
 
   it("lockout still applies: 5 wrong passwords lock the account, even the right one is refused", async () => {
@@ -94,16 +88,5 @@ describe("AUTH_MFA=off", () => {
     expect((await prisma.user.findUniqueOrThrow({ where: { id: admin.id } })).lockedUntil).not.toBeNull();
     expect(await beginPasswordLogin({ upn: admin.upn, password: STRONG }, META)).toMatchObject({ ok: false });
     expect(await prisma.auditEvent.count({ where: { action: "auth.lockout" } })).toBe(1);
-  });
-
-  it("writes auth.mfa_disabled ONCE per process on the platform chain", async () => {
-    const results = await Promise.all([announceMfaDisabledOnce(), announceMfaDisabledOnce()]);
-    expect(await announceMfaDisabledOnce()).toBe(false);
-    const events = await prisma.auditEvent.findMany({ where: { action: MFA_DISABLED_ACTION } });
-    // resetDb above ran before; earlier tests in this file never announced
-    expect(results.filter(Boolean)).toHaveLength(1);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ tenantId: null, actor: "system:config", entity: "Config", entityId: "AUTH_MFA" });
-    expect((await verifyAuditLog(null)).valid).toBe(true);
   });
 });

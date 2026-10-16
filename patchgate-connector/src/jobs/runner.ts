@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Journal } from "../journal.ts";
 import { PatchGateError, type PatchGateClient } from "../pg-client.ts";
-import { verifyJob, type JobResult, type JobType, type SignedJob } from "../protocol.ts";
+import { verifyJob, type JobPayload, type JobResult, type JobType, type SignedJob } from "../protocol.ts";
 import { AbortedError, backoffDelay, sleep } from "../util/backoff.ts";
 import { errorMessage, type Logger } from "../util/log.ts";
 import type { Semaphore } from "../util/semaphore.ts";
@@ -165,6 +165,11 @@ export class JobRunner {
       return;
     }
 
+    if (check.type === "DEPLOY_WINDOWS") {
+      // Real-time guard: PatchGate authorised these approvals on this PC until the window ends (signed job).
+      const p = check.payload as JobPayload<"DEPLOY_WINDOWS">;
+      this.o.deps.guard?.allowDeployment(p.agentId, p.guids, job.expiresAt);
+    }
     await this.pinPackages(check.type, check.payload, job.expiresAt, jlog);
     this.trackInflight(job.id, this.run(job.id, check.type, check.payload, job.expiresAt, jlog));
   }

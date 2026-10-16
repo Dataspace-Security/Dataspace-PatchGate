@@ -3,7 +3,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { createServer as createHttpsServer, get as httpsGet } from "node:https";
 import { get as httpGet } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { TacticalWinUpdate } from "../../src/tactical/types.ts";
+import type { TacticalAuditLog, TacticalWinUpdate } from "../../src/tactical/types.ts";
 import { readBody } from "./common.ts";
 
 /** In-process fake of the Tactical RMM REST endpoints the connector uses. */
@@ -18,6 +18,9 @@ export interface FakeAgent {
   software: Array<{ name: string; version: string; publisher?: string }>;
   /** Make every per-agent call fail with this HTTP status. */
   failStatus?: number;
+  /** Tactical last_seen (ISO DateTime) / boot_time (epoch seconds, float) as the agent list returns them */
+  last_seen?: unknown;
+  boot_time?: unknown;
 }
 
 export interface RunScriptCall {
@@ -49,6 +52,12 @@ export class FakeTactical {
   onRunScript?: (call: RunScriptCall) => Promise<string>;
   /** Answer runscript with this HTTP status AFTER recording the call (e.g. a proxy 504 while the script runs). */
   runScriptStatus?: { status: number; body: string };
+  /** Tactical's audit log (PATCH /logs/audit/ pages it newest first, like Django's Paginator). */
+  readonly auditLogs: TacticalAuditLog[] = [];
+  /** Answer PUT /winupdate/<pk>/ with this HTTP status (Tactical refusing a change). */
+  putStatus?: number;
+  /** GET /agents/ carries has_patches_pending (Tactical 1.5.x); false = an older Tactical without the flag. */
+  patchFlag = true;
   private server: Server | undefined;
   url = "";
 
@@ -111,7 +120,20 @@ export class FakeTactical {
       return this.json(
         res,
         200,
-        [...this.agents.values()].map((a) => ({ agent_id: a.agent_id, hostname: a.hostname, status: a.status, version: a.version, goarch: a.goarch, plat: "windows", site_name: "HQ", client_name: "Bank", operating_system: "Windows 11" })),
+        [...this.agents.values()].map((a) => ({
+          agent_id: a.agent_id,
+          hostname: a.hostname,
+          status: a.status,
+          version: a.version,
+          goarch: a.goarch,
+          plat: "windows",
+          site_name: "HQ",
+          client_name: "Bank",
+          operating_system: "Windows 11",
+          last_seen: a.last_seen,
+          boot_time: a.boot_time,
+          ...(this.patchFlag ? { has_patches_pending: a.updates.some((u) => u.action === "approve" && !u.installed) } : {}),
+        })),
       );
     }
     if ((m = /^\/agents\/([^/]+)\/$/.exec(path)) && method === "GET") {
@@ -131,6 +153,7 @@ export class FakeTactical {
       return this.json(res, 200, "ok");
     }
     if ((m = /^\/winupdate\/(\d+)\/$/.exec(path)) && method === "PUT") {
+      if (this.putStatus) return this.json(res, this.putStatus, "refused");
       const u = this.findUpdate(Number(m[1]));
       if (!u) return this.json(res, 404, "not found");
       const action = (body as { action: TacticalWinUpdate["action"] }).action;
@@ -161,6 +184,13 @@ export class FakeTactical {
       if (this.runScriptStatus) return this.json(res, this.runScriptStatus.status, this.runScriptStatus.body);
       const out = await (this.onRunScript ?? ((c) => this.pcInstall(c)))(call);
       return this.json(res, 200, out);
+    }
+    if (method === "PATCH" && path === "/logs/audit/") {
+      const p = (body as { pagination: { sortBy: string; descending: boolean; page: number; rowsPerPage: number } }).pagination;
+      const sorted = [...this.auditLogs].sort((a, b) => (p.descending ? b.id - a.id : a.id - b.id));
+      const pages = Math.max(1, Math.ceil(sorted.length / p.rowsPerPage));
+      const page = Math.min(Math.max(1, p.page), pages); // Paginator.get_page clamps out-of-range pages
+      return this.json(res, 200, { audit_logs: sorted.slice((page - 1) * p.rowsPerPage, page * p.rowsPerPage), total: sorted.length });
     }
     return this.json(res, 404, "no route");
   }

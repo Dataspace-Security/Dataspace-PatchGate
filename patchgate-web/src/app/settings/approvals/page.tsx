@@ -11,7 +11,7 @@ async function Approvals() {
     <>
       <PageHeader
         title="Approval policy"
-        description={`How change requests of ${tenant.name} are approved. A ${tenant.name} admin always approves; maker and checker are always different people; emergency changes always need two distinct admins.`}
+        description={`How change requests of ${tenant.name} are approved. With approval ON a ${tenant.name} admin other than the maker approves, and emergency changes need two distinct admins. Only an admin can switch approval off.`}
       />
       <SettingsTabs active="approvals" platformAdmin={isPlatformReader(user)} />
     </>

@@ -13,6 +13,8 @@ import { fitCollectResult, MAX_RESULT_BYTES } from "./result-size.ts";
 import { assertTrustedPackage, type TrustPolicy } from "./trust-policy.ts";
 import { wuInstall } from "./wu-install.ts";
 import { wuScan, type WuConfig } from "./wu-scan.ts";
+import { tacticalAuditSync } from "./tactical-audit.ts";
+import type { TacticalGuard } from "../guard/tactical-guard.ts";
 
 /**
  * Typed job executors. Each maps one signed, schema-validated payload to a fixed sequence of
@@ -38,7 +40,12 @@ export interface ExecutorDeps {
   trust?: TrustPolicy;
   /** Cap on one serialised COLLECT result (tests lower it). */
   maxResultBytes?: number;
+  /** Real-time Tactical guard (protocol §8): allow-set, and leaves PCs alone while a job changes their approvals. */
+  guard?: TacticalGuard;
 }
+
+/** Run an approval-changing job on one PC without the guard touching that PC meanwhile. */
+const guarded = <T>(d: ExecutorDeps, agentId: string, fn: () => Promise<T>): Promise<T> => (d.guard ? d.guard.busyAgent(agentId, fn) : fn());
 
 /** Protocol maximum of agents in one SYNC_AGENTS result (resultSchemas.SYNC_AGENTS). */
 export const MAX_SYNC_AGENTS = 10_000;
@@ -48,6 +55,11 @@ export type JobResultFor<T extends JobType> = z.infer<(typeof resultSchemas)[T]>
 const AGENT_ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 const clip = (s: string | null | undefined, max: number): string | null | undefined => (typeof s === "string" ? s.slice(0, max) : s);
 const clipTail = (s: string, max: number): string => (s.length > max ? s.slice(s.length - max) : s);
+/** Tactical boot_time (epoch seconds, float; sometimes a numeric string) → finite number or null. */
+const epochOrNull = (v: unknown): number | null => {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^\d+(?:\.\d+)?$/.test(v.trim()) ? Number(v) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
 
 /** If every per-agent call failed because Tactical itself is unreachable, fail the batch (retryable). */
 function assertTacticalReachable(errors: unknown[], total: number): void {
@@ -77,6 +89,8 @@ async function syncAgents(d: ExecutorDeps): Promise<JobResultFor<"SYNC_AGENTS">>
     goarch: clip(a.goarch, 16),
     version: clip(a.version, 40),
     online: a.status ? a.status === "online" : null,
+    lastSeen: typeof a.last_seen === "string" ? a.last_seen.slice(0, 64) : null,
+    bootTime: epochOrNull(a.boot_time),
   }));
   return { agents: out };
 }
@@ -277,12 +291,16 @@ async function dispatch(type: JobType, payload: unknown, d: ExecutorDeps): Promi
     case "COLLECT":
       result = await collect(d, payload as JobPayload<"COLLECT">);
       break;
-    case "DEPLOY_WINDOWS":
-      result = await deployWindows(d, payload as JobPayload<"DEPLOY_WINDOWS">);
+    case "DEPLOY_WINDOWS": {
+      const p = payload as JobPayload<"DEPLOY_WINDOWS">;
+      result = await guarded(d, p.agentId, () => deployWindows(d, p));
       break;
-    case "RESET_APPROVALS":
-      result = await resetApprovals(d, payload as JobPayload<"RESET_APPROVALS">);
+    }
+    case "RESET_APPROVALS": {
+      const p = payload as JobPayload<"RESET_APPROVALS">;
+      result = await guarded(d, p.agentId, () => resetApprovals(d, p));
       break;
+    }
     case "CACHE_PACKAGE":
       result = await cachePackage(d, payload as JobPayload<"CACHE_PACKAGE">);
       break;
@@ -294,6 +312,13 @@ async function dispatch(type: JobType, payload: unknown, d: ExecutorDeps): Promi
       break;
     case "WU_INSTALL":
       result = await wuInstall(d, payload as JobPayload<"WU_INSTALL">);
+      break;
+    case "TACTICAL_AUDIT_SYNC":
+      result = await tacticalAuditSync(d.tactical, payload as JobPayload<"TACTICAL_AUDIT_SYNC">);
+      break;
+    case "TACTICAL_GUARD_SYNC":
+      // Guard off (tactical.guardIntervalSec 0): acknowledged, nothing armed.
+      result = d.guard?.enabled ? await d.guard.applySync(payload as JobPayload<"TACTICAL_GUARD_SYNC">) : { allowEntries: 0, known: false };
       break;
     default: {
       const never: never = type;
@@ -318,7 +343,8 @@ export const isNonIdempotent = (t: JobType): boolean => t === "DEPLOY_PACKAGE" |
  * Read-only jobs: running them again is always safe. Their (possibly large) result bodies are never
  * written to the journal; a re-delivery after a restart simply runs them again.
  */
-export const isReadOnlyJob = (t: string): boolean => t === "SYNC_AGENTS" || t === "SCAN" || t === "COLLECT" || t === "WU_SCAN";
+export const isReadOnlyJob = (t: string): boolean =>
+  t === "SYNC_AGENTS" || t === "SCAN" || t === "COLLECT" || t === "WU_SCAN" || t === "TACTICAL_AUDIT_SYNC" || t === "TACTICAL_GUARD_SYNC";
 
 /** Cache paths a verified job refers to (protected from cache eviction until the job expires). */
 export function packagePaths(type: JobType, payload: unknown): string[] {

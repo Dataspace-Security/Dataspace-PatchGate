@@ -5,7 +5,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 /**
  * LAB end-to-end tests against the RUNNING hosted lab (lab/up-all.sh): PatchGate = "our server" at
- * https://patchgate.patchgate-lab.internal:3443 with local accounts (password + TOTP), Bank A's real
+ * https://patchgate.patchgate-lab.internal:3443 with local accounts (password only), Bank A's real
  * connector + Tactical. No web server is started here, and no database is reset.
  *
  *   npx playwright test -c playwright.lab.config.ts

@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { Building2, KeyRound, Lock, ShieldAlert, Users } from "lucide-react";
+import { Building2, KeyRound, Lock, Users } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { recentAdminEvents } from "@/lib/auth/admin-overview";
 import { Badge, Card, EmptyState, Loading, PageHeader, Stat, fmtDate, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
@@ -15,11 +15,10 @@ async function Overview() {
   const scope = platform ? {} : { tenantId: user.tenantId };
   const now = new Date();
 
-  const [total, active, locked, pendingMfa, mustChange, banks, tenant, recent] = await Promise.all([
+  const [total, active, locked, mustChange, banks, tenant, recent] = await Promise.all([
     prisma.user.count({ where: scope }),
     prisma.user.count({ where: { ...scope, active: true } }),
     prisma.user.count({ where: { ...scope, lockedUntil: { gt: now } } }),
-    prisma.user.count({ where: { ...scope, active: true, totpEnabled: false, passwordHash: { not: null } } }),
     prisma.user.count({ where: { ...scope, active: true, mustChangePassword: true } }),
     platform ? prisma.tenant.count({ where: { active: true } }) : Promise.resolve(0),
     platform ? Promise.resolve(null) : prisma.tenant.findUnique({ where: { id: user.tenantId! }, select: { name: true } }),
@@ -42,12 +41,11 @@ async function Overview() {
           <Stat label="Active users" value={active} hint={`${total} in total`} icon={<Users size={16} />} />
           {platform && <Stat label="Active banks" value={banks} icon={<Building2 size={16} />} />}
           <Stat label="Locked out" value={locked} tone={locked > 0 ? "warn" : "neutral"} icon={<Lock size={16} />} hint="5 failed attempts → 15 min" />
-          <Stat label="MFA not set up" value={pendingMfa} tone={pendingMfa > 0 ? "warn" : "neutral"} icon={<ShieldAlert size={16} />} hint="enrol at next sign-in" />
-          {!platform && <Stat label="Temporary password" value={mustChange} icon={<KeyRound size={16} />} hint="must change at next sign-in" />}
+          <Stat label="Temporary password" value={mustChange} icon={<KeyRound size={16} />} hint="must change at next sign-in" />
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
-          <Card title="Users" description={readOnly ? "Every account in your scope, with role, status and last sign-in (read-only)." : "Create accounts, change roles, reset passwords or authenticators, deactivate leavers."}>
+          <Card title="Users" description={readOnly ? "Every account in your scope, with role, status and last sign-in (read-only)." : "Create accounts, change roles, reset passwords, deactivate leavers."}>
             <Link href="/admin/users" className="text-sm font-medium text-primary hover:underline">
               {readOnly ? "View users →" : "Manage users →"}
             </Link>
@@ -61,7 +59,7 @@ async function Overview() {
           ) : (
             <Card title="Security policy" description="Applies to every PatchGate account.">
               <ul className="list-disc space-y-1 pl-5 text-sm text-muted">
-                <li>Passwords of at least 14 characters, plus an authenticator app (TOTP).</li>
+                <li>Password-only sign-in with passwords of at least 14 characters (banks needing MFA use their SSO).</li>
                 <li>Accounts lock for 15 minutes after 5 failed attempts.</li>
                 <li>Sessions end after 15 minutes idle and 8 hours at most.</li>
               </ul>

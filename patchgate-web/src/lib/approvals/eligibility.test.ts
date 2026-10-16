@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eligibilityErrors, type EligiblePatch } from "./eligibility";
+import { NEEDS_PATCHGATE_SCAN, eligibilityErrors, type EligiblePatch } from "./eligibility";
 
 const NOW = new Date("2026-10-14T12:00:00Z");
 
@@ -83,5 +83,15 @@ describe("eligibilityErrors per bank", () => {
 
   it("accepts it once the bank has enabled the app (and ignores the flag for Windows patches)", () => {
     expect(eligibilityErrors([{ ...tp(), tenantAppEnabled: true }, { ...win, tenantAppEnabled: false }], NOW)).toEqual([]);
+  });
+});
+
+describe("Windows patches for PatchGate-sourced banks", () => {
+  it("refuses patches only Tactical's online scan found, and unresolvable ones; others pass", () => {
+    expect(eligibilityErrors([win], NOW)).toEqual([]);
+    expect(eligibilityErrors([{ ...win, winUpdateBlock: "not-scanned" }], NOW)).toEqual([`KB5050001: ${NEEDS_PATCHGATE_SCAN}`]);
+    expect(NEEDS_PATCHGATE_SCAN).toMatch(/^Needs PatchGate scan/);
+    expect(eligibilityErrors([{ ...win, winUpdateBlock: "unresolvable" }], NOW)[0]).toContain("no Microsoft download");
+    expect(eligibilityErrors([{ ...win, supersededById: "x", winUpdateBlock: "not-scanned" }], NOW)[0]).toContain("superseded");
   });
 });

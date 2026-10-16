@@ -5,7 +5,6 @@
 #                                               whole system in Docker (server + bank site with Tactical from Docker Hub)
 #   ./install-patchgate-test.sh --reinstall     erase ONLY the test install (asks first; --yes skips) and do it again
 #   ./install-patchgate-test.sh --status        is it running? connector healthy?
-#   ./install-patchgate-test.sh --code WHO      current 6-digit sign-in code for an account (e.g. approver)
 #   ./install-patchgate-test.sh --cleanup       erase ONLY the test install (containers/network/volumes with the kit label)
 # Options: --ref <branch|tag|sha> (default main)  --dir <folder> (default ~/patchgate-test)  --rebuild (force image builds)
 #          --repo <owner/name> (default Dataspace-Security/Dataspace-PatchGate)
@@ -38,7 +37,7 @@ while [ $# -gt 0 ]; do
     --kit-from) KIT_FROM="${2:?--kit-from needs a folder}"; shift 2 ;;   # developers: test unpushed kit changes
     --reinstall|--fresh) MODE=install; PASS+=(--reinstall); shift ;;
     --status|--cleanup) MODE=passthrough; PASS+=("$1"); shift ;;
-    --code|--totp) MODE=passthrough; PASS+=(--code "${2:?--code needs an account}"); shift 2 ;;
+    --code|--totp) echo "$1 was removed: sign-in is password-only (see logins.txt)"; exit 2 ;;
     --yes|-y|--resume) PASS+=("$1"); shift ;;
     -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "unknown option $1 (see --help)"; exit 2 ;;
@@ -61,7 +60,7 @@ hostpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else p
 
 latest_kit() { ls -dt "$CLONE"/kits/colleague-test/out/PatchGate-*-test-kit 2>/dev/null | head -1 || true; }
 
-# ------------------------------------------------------------------ --status / --cleanup / --code: use the built kit
+# ------------------------------------------------------------------ --status / --cleanup: use the built kit
 if [ "$MODE" = passthrough ]; then
   KIT="$(latest_kit)"
   [ -n "$KIT" ] && [ -f "$KIT/test-on-my-pc.sh" ] || die "no test install built from $CLONE yet (run without options first)"
@@ -222,5 +221,5 @@ echo "${B}Time per phase${N}"
 for p in "${PHASES[@]}"; do echo "    $p"; done
 tot=$(( $(date +%s) - RUN0 )); echo "    total: $((tot / 60))m$((tot % 60))s"
 echo "    kit folder: $KIT   (logins.txt, logs/, patchgate-test-ca.pem)"
-echo "    later:  $0 --status | --code approver | --reinstall | --cleanup"
+echo "    later:  $0 --status | --reinstall | --cleanup"
 exit "$rc"

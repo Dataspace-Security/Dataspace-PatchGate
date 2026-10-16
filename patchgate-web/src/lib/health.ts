@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { env, mfaDisabled } from "@/lib/env";
+import { env } from "@/lib/env";
 import { anyChainExportStale } from "@/lib/audit/export";
 import { auditChainsHealthy } from "@/lib/audit/verify-incremental";
 import { repoQuotaStatus } from "@/lib/winupdate/quota";
@@ -22,7 +22,6 @@ export interface Readiness {
     siemExport: boolean | null; // null = no SIEM configured (dev)
     repoQuota: boolean | null; // false = repository over quota (downloads paused); null = never measured / DB down
     notifications: boolean; // report-only: false = SMTP not configured (alerts are recorded but not e-mailed)
-    mfa: boolean; // report-only: false = local sign-in WITHOUT the TOTP code (AUTH_MFA=off) — not for go-live
   };
 }
 
@@ -74,5 +73,5 @@ export async function readiness(): Promise<Readiness> {
       : false;
   // Report-only (like auditChain): an over-quota repository pauses downloads, it does not stop serving.
   const repoQuota = database ? await safe(async () => (await repoQuotaStatus())?.ok ?? null, false) : null;
-  return { ready: database && migrations && repository, checks: { database, migrations, repository, auditChain, siemExport, repoQuota, notifications: notificationsConfigured(), mfa: !mfaDisabled(e) } };
+  return { ready: database && migrations && repository, checks: { database, migrations, repository, auditChain, siemExport, repoQuota, notifications: notificationsConfigured() } };
 }

@@ -208,13 +208,20 @@ describe("enqueue in the triggering transaction", () => {
     expect((await rows({ event: "CR_APPROVED" })).map((r) => r.target)).toEqual(["maker@a.example"]);
   });
 
-  it("a submitted request goes to the bank's approvers only (bank approval is always required)", async () => {
+  it("a submitted request goes to the bank's approvers only (approval ON, the default)", async () => {
     const p = await people();
-    await expect(admin.tenant.update({ where: { id: TENANT_A }, data: { requireBankApproval: false } })).rejects.toThrow();
     await admin.user.create({ data: { upn: "pappr@pg.example", name: "PA", role: "ADMIN", tenantId: null } });
     const cr = await draftCr(p.maker);
     await applyAction(p.maker, TENANT_A, cr.id, "submit");
     expect((await rows({ event: "CR_SUBMITTED" })).map((r) => r.target)).toEqual(["admin@a.example", "approver@a.example"]);
+  });
+
+  it("approval OFF: the auto-approved submit sends no 'waiting for approval' notice", async () => {
+    const p = await people();
+    await admin.tenant.update({ where: { id: TENANT_A }, data: { requireBankApproval: false } });
+    const cr = await draftCr(p.maker);
+    expect(await applyAction(p.maker, TENANT_A, cr.id, "submit")).toMatchObject({ status: "APPROVED", autoApproved: true });
+    expect(await rows({ event: "CR_SUBMITTED" })).toHaveLength(0);
   });
 
   it("a rolled-back transaction leaves no notification; a committed one does", async () => {
@@ -249,12 +256,8 @@ describe("enqueue in the triggering transaction", () => {
     const p = await people();
     const viewer = asSessionUser(await admin.user.create({ data: { upn: "viewer@a.example", name: "Viewer", role: "AUDITOR", tenantId: TENANT_A } }));
     await userAction(p.platformAdmin, viewer.id, "reset-password"); // accounts are managed by platform admins only
-    await userAction(p.platformAdmin, viewer.id, "reset-mfa");
-    const r = (await rows()).map((x) => [x.event, x.target, x.tenantId]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-    expect(r).toEqual([
-      ["MFA_RESET", "viewer@a.example", TENANT_A],
-      ["PASSWORD_RESET", "viewer@a.example", TENANT_A],
-    ]);
+    const r = (await rows()).map((x) => [x.event, x.target, x.tenantId]);
+    expect(r).toEqual([["PASSWORD_RESET", "viewer@a.example", TENANT_A]]);
     await expect(setMyOptOut(viewer, { event: "PASSWORD_RESET", optedOut: true })).rejects.toThrow(/cannot be switched off/);
   });
 

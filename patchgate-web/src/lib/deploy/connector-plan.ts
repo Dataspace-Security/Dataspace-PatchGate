@@ -101,9 +101,12 @@ function windowsPatchesOf(cr: CrForPlan): { guids: string[]; patchIds: string[] 
  * being verified or in quarantine). Not a failure: the deployment stays queued and is planned again later.
  */
 export class WindowsUpdatesNotReadyError extends Error {
+  /** Why it waits, in plain words (stored as the deployment's note, shown in the Note column). */
+  readonly reason: string;
   constructor(reason = "Windows update files are not verified yet") {
     super(`${reason} — waiting`);
     this.name = "WindowsUpdatesNotReadyError";
+    this.reason = reason;
   }
 }
 

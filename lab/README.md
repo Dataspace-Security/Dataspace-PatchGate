@@ -6,7 +6,7 @@ HTTPS calls to us. Tactical and the PCs never reach the internet, and the PCs ne
 
 ```
  Internet ──► PatchGate = "our server" (this PC)  https://patchgate.patchgate-lab.internal:3443
-                 ▲ local login (password; TOTP when AUTH_MFA=required) · signed jobs · package downloads · audit feed
+                 ▲ local login (password only) · signed jobs · package downloads · audit feed
                  │ HTTPS, outbound only
  ┌─ BANK A (Docker, internal networks) ───────┼──────────────────────────────────────────────────────┐
  │  bank-a-firewall (socat): forwards ONLY :3443 PatchGate + :6514 bank SIEM to the lab host          │
@@ -28,8 +28,8 @@ HTTPS calls to us. Tactical and the PCs never reach the internet, and the PCs ne
 | Bank A package cache | `https://pg-cache.patchgate-lab.internal:8443/repo/<repoPath>`. The certificate is issued by the lab CA (`lab/certs/out/ca.crt`). |
 | Bank A SIEM | `lab/siem/received.log` (TLS syslog :6514). Check the relay with `node lab/siem/check.mjs bank-a-connector-hq`. |
 
-**Credentials** (all gitignored): `lab/patchgate/lab-users.json` (local accounts; with `AUTH_MFA=required` the TOTP
-secret is recorded at first sign-in), `lab/patchgate/secrets.env` + `lab/patchgate/secrets/job-signing-key.pem`, `lab/tactical/.env`,
+**Credentials** (all gitignored): `lab/patchgate/lab-users.json` (local accounts: password, role, bank),
+`lab/patchgate/secrets.env` + `lab/patchgate/secrets/job-signing-key.pem`, `lab/tactical/.env`,
 `lab/tactical/provision.json`, `lab/connector/bank-a/etc/{tactical-api-key,cache-key.pem}`.
 
 | Account | Role |
@@ -41,11 +41,9 @@ secret is recorded at first sign-in), `lab/patchgate/secrets.env` + `lab/patchga
 
 `lab-operator@patchgate.lab` (old platform operator) was mapped to AUDITOR by the role migration and is no longer used.
 
-**Sign-in is password only in the lab** (`AUTH_MFA=off`, set in `lab/patchgate/env.sh`; admins see a warning banner).
-Open the URL and enter the password from `lab-users.json` (`node lab/patchgate/show-login.mjs <upn>` prints it).
-To test with the 6-digit code: `AUTH_MFA=required bash lab/patchgate/start.sh` (after `stop.sh`), then get a code
-with `node lab/patchgate/pg-api.mjs totp <upn>` — existing authenticators still work. Scripts call the
-real API as a user with `node lab/patchgate/pg-api.mjs <upn> GET /api/...`.
+**Sign-in is password only** (local sign-in has no second step by design, as in production; banks needing MFA use
+their SSO). Open the URL and enter the password from `lab-users.json` (`node lab/patchgate/show-login.mjs <upn>`
+prints it). Scripts call the real API as a user with `node lab/patchgate/pg-api.mjs <upn> GET /api/...`.
 
 ## One-time setup (this PC)
 1. Admin PowerShell: `powershell -ExecutionPolicy Bypass -File lab\host-setup.ps1`. It sets the hosts entries
@@ -112,7 +110,7 @@ node lab/sandbox/stage-fixtures.mjs                               # outdated app
 | Cache | downloads hash-identical. Unknown, uncached, traversal and dot-file paths → 404. POST → 405. No lab CA → TLS refused. Per-client limit 2 → 3rd download 503 + `Retry-After: 30`. PatchGate-set 20 Mbit/s → measured 20.1 Mbit/s. |
 | Bank trust policy | app not listed → `CACHE_PACKAGE` refused before download. Publisher pin lists with commas (Zoom, Temurin) accepted. |
 | SIEM relay | Bank A chain arrives as `bank-a-connector-hq`: no fork, no regression. Relay records carry **no prevHash**, so chain linkage cannot be verified. |
-| UI (Playwright, 7 tests) | TOTP sign-in + enrolment, wrong code refused, bank + enrolment code created in the UI, connector online, bank switch, endpoints/discovery, bank user isolation |
+| UI (Playwright, 7 tests) | password-only sign-in, wrong password refused, bank + enrolment code created in the UI, connector online, bank switch, endpoints/discovery, bank user isolation |
 
 ## Known lab findings
 - **Temurin** renamed its signing organisation between versions, so pin lists (`O=A; O=B`) are supported.

@@ -72,7 +72,7 @@ for var in AUDIT_HMAC_KEY WORKER_TOKEN WSUS_TOKEN AUTH_ENC_KEY AUTH_ENC_KEY_PREV
   unset "${var}_FILE"
 done
 # Least privilege: a container that must pass config validation but never USES a secret (e.g. the fetcher
-# never decrypts TOTP seeds or calls Tactical) gets a random per-start value instead of the real one:
+# never decrypts webhook URLs or calls Tactical) gets a random per-start value instead of the real one:
 #   PATCHGATE_EPHEMERAL_SECRETS="AUTH_ENC_KEY TACTICAL_API_KEY"
 # Never allowed for AUDIT_HMAC_KEY / DATABASE_URL (they must be the real values when present).
 for var in ${PATCHGATE_EPHEMERAL_SECRETS:-}; do

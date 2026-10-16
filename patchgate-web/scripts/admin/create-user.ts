@@ -6,8 +6,8 @@
  *   … add --generate to print a one-time temporary password instead of being prompted for one.
  *
  * The password is read without echo (or from stdin when piped), checked against the password policy,
- * stored only as a scrypt hash, and the creation is written to the audit log. The user sets up the
- * authenticator (TOTP) at first sign-in.
+ * stored only as a scrypt hash, and the creation is written to the audit log. Local sign-in is
+ * password-only (banks needing MFA use their SSO).
  */
 import { registerHooks } from "node:module";
 import { createRequire } from "node:module";

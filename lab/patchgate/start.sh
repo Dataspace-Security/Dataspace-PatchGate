@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the lab PatchGate = "our server" of the hosted architecture (docs/ARCHITECTURE-HOSTED.md).
-#   bash lab/patchgate/start.sh                 → https://patchgate.<domain>:3443, local login (password + TOTP),
+#   bash lab/patchgate/start.sh                 → https://patchgate.<domain>:3443, local login (password only),
 #                                                 banks reached ONLY through their connectors (signed jobs)
 #   LAB_MODE=dev bash lab/patchgate/start.sh    → old single-bank dev setup: http://localhost:3000, dev user
 #                                                 switcher, direct Tactical link (LAB_HTTPS=1 for https :3443)

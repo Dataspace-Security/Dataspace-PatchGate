@@ -5,10 +5,10 @@ import { AuthError, type SessionUser } from "@/lib/auth/session";
 import { DomainError } from "@/lib/errors";
 import { canActForTenant, withTenant, type Tx } from "@/lib/tenancy";
 import { approvalExpiryFrom, requiredApprovalsFor, resolveRebootPolicy } from "@/lib/policies/approval-policy";
-import { transition, windowBypassGranted, type CrAction, type CrSnapshot } from "./state-machine";
+import { APPROVAL_OFF_REASON, transition, windowBypassGranted, type CrAction, type CrSnapshot } from "./state-machine";
 import { recordApproval } from "./approval-record";
 import { eligibilityErrors } from "./eligibility";
-import { enabledAppIds, toEligible } from "./load-eligible";
+import { enabledAppIds, toEligible, requiresOfflineWindowsScan } from "./load-eligible";
 import { notifyChangeRequestAction } from "@/lib/notify/enqueue";
 
 export const createChangeRequestSchema = z.object({
@@ -100,7 +100,7 @@ export async function createChangeRequest(user: SessionUser, tenantId: string, i
     });
     if (patches.length !== patchIds.length) throw new DomainError("One or more patches not found", 404);
 
-    const errors = eligibilityErrors(await toEligible(patches, await enabledAppIds(tx, tenantId), tx), new Date());
+    const errors = eligibilityErrors(await toEligible(patches, await enabledAppIds(tx, tenantId), tx, { requireOfflineScan: await requiresOfflineWindowsScan(tx, tenantId) }), new Date());
     if (errors.length > 0) throw new DomainError(errors.join("; "), 422);
 
     const cr = await tx.changeRequest.create({
@@ -183,15 +183,24 @@ export async function applyAction(
 
     const result = transition(cr, action, user, { now, deployNow: opts.deployNow === true });
     if (!result.ok) throw new DomainError(result.error, 409);
+    if (action === "submit") {
+      // Refuse before maker + checker spend time on a request PatchGate cannot deliver.
+      const rows = await tx.changeRequestPatch.findMany({ where: { changeRequestId: crId }, select: { patch: { include: { appVersion: { include: { app: true } } } } } });
+      const eligible = await toEligible(rows.map((r) => r.patch), await enabledAppIds(tx, tenantId), tx, { requireOfflineScan: await requiresOfflineWindowsScan(tx, tenantId) });
+      const errors = eligibilityErrors(eligible, now);
+      if (errors.length > 0) throw new DomainError(errors.join("; "), 422);
+    }
 
     const approval = action === "approve" ? await recordApproval(tx, tenantId, crId, user, emergency && opts.deployNow === true) : null;
-    const finalApproval = action === "approve" && result.next === "APPROVED";
+    // Approval OFF for the bank: the submit itself approves (no second person; see state-machine.ts).
+    const autoApproved = action === "submit" && result.next === "APPROVED";
+    const finalApproval = (action === "approve" && result.next === "APPROVED") || autoApproved;
     const policy =
       finalApproval || action === "submit"
         ? await tx.tenant.findUnique({ where: { id: tenantId }, select: { approvalExpiryDays: true, maxTargetsPerCr: true } })
         : null;
     // Emergency window bypass only when EVERY approver confirmed "deploy now".
-    const bypass = finalApproval && windowBypassGranted(emergency, approval?.all ?? []);
+    const bypass = finalApproval && !autoApproved && windowBypassGranted(emergency, approval?.all ?? []);
     const bypassedWindowId = bypass ? ((await tx.changeRequest.findFirst({ where: { id: crId, tenantId }, select: { windowId: true } }))?.windowId ?? null) : null;
     const approvalExpiresAt = finalApproval ? approvalExpiryFrom(now, policy?.approvalExpiryDays ?? 0) : null;
 
@@ -202,7 +211,8 @@ export async function applyAction(
       data: {
         status: result.next,
         ...(stamp ? { [stamp]: now } : {}),
-        ...(finalApproval ? { approvedById: user.id, approvalExpiresAt } : {}),
+        ...(action === "submit" ? { autoApproved } : {}),
+        ...(autoApproved ? { decidedAt: now, approvedById: null, approvalExpiresAt } : finalApproval ? { approvedById: user.id, approvalExpiresAt } : {}),
         // The pipeline treats "no window" as "deploy as soon as started"; the original window is kept for the record.
         ...(bypass ? { windowBypass: true, bypassedWindowId, windowId: null } : {}),
         ...(action === "reject" ? { rejectReason: reason ?? null } : {}),
@@ -215,7 +225,7 @@ export async function applyAction(
       await tx.changeRequestApproval.deleteMany({ where: { changeRequestId: crId, tenantId } });
       targets = await snapshotTargets(tx, tenantId, crId);
       const requiredApprovals = requiredApprovalsFor({ emergency, targetCount: targets, maxTargetsPerCr: policy?.maxTargetsPerCr ?? 0 });
-      await tx.changeRequest.updateMany({ where: { id: crId, tenantId }, data: { requiredApprovals, approvalExpiresAt: null } });
+      if (!autoApproved) await tx.changeRequest.updateMany({ where: { id: crId, tenantId }, data: { requiredApprovals, approvalExpiresAt: null } });
     } else if (action === "approve") {
       targets = (await tx.changeRequest.findFirst({ where: { id: crId, tenantId }, select: { targetCount: true } }))?.targetCount ?? undefined;
     }
@@ -239,6 +249,27 @@ export async function applyAction(
       },
       tx,
     );
+    if (autoApproved) {
+      await appendAudit(
+        {
+          tenantId,
+          actor: user.upn,
+          action: "change_request.approval_skipped",
+          entity: "ChangeRequest",
+          entityId: crId,
+          payload: {
+            reason: APPROVAL_OFF_REASON,
+            policy: { requireBankApproval: false },
+            maker: user.upn,
+            actorBank: user.tenantId ?? "platform",
+            emergency,
+            ...(targets !== undefined ? { targetEndpoints: targets } : {}),
+            ...(approvalExpiresAt ? { approvalExpiresAt: approvalExpiresAt.toISOString() } : {}),
+          },
+        },
+        tx,
+      );
+    }
     if (bypass) {
       await appendAudit(
         {
@@ -254,6 +285,6 @@ export async function applyAction(
     }
     // A partial approval (first of two) is not "approved" yet: no approval notification for it.
     if (!(action === "approve" && !finalApproval)) await notifyChangeRequestAction(tx, tenantId, crId, action, user, reason);
-    return { id: crId, status: result.next, approvals: approval?.all.length ?? null, windowBypass: bypass };
+    return { id: crId, status: result.next, approvals: approval?.all.length ?? null, windowBypass: bypass, autoApproved };
   });
 }

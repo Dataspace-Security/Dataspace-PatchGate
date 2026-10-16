@@ -79,6 +79,18 @@ describe("SYNC_AGENTS / SCAN / COLLECT", () => {
     ]);
   });
 
+  it("passes Tactical last_seen / boot_time through (PatchGate normalises them); odd types never fail the list", async () => {
+    tactical.addAgent({ agent_id: A1, last_seen: "2026-10-16T11:59:30.123456Z", boot_time: 1_760_601_600.25 });
+    tactical.addAgent({ agent_id: A2, last_seen: 12345, boot_time: "1760601600" });
+    tactical.addAgent({ agent_id: "agentCCCC3333", boot_time: { weird: true } });
+    const r = (await executeJob("SYNC_AGENTS", {}, deps)) as { agents: Array<{ agentId: string; lastSeen: string | null; bootTime: number | null }> };
+    expect(r.agents.map((a) => [a.agentId, a.lastSeen, a.bootTime])).toEqual([
+      [A1, "2026-10-16T11:59:30.123456Z", 1_760_601_600.25],
+      [A2, null, 1_760_601_600],
+      ["agentCCCC3333", null, null],
+    ]);
+  });
+
   it("SCAN reports per-agent failures without failing the batch", async () => {
     tactical.addAgent({ agent_id: A1 });
     tactical.addAgent({ agent_id: A2, failStatus: 400 });

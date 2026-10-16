@@ -2,7 +2,7 @@
 
 import { useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, KeyRound, Loader2, Lock, Pencil, Power, ShieldOff, UserPlus, X } from "lucide-react";
+import { Check, Copy, KeyRound, Loader2, Lock, Pencil, Power, UserPlus, X } from "lucide-react";
 import { callApi } from "@/components/api-client";
 import { Alert, BUTTON, Card, buttonBase, inputCls, labelCls } from "@/components/ui";
 import { ROLE_LABEL, roleOptions, type ActiveRole, type Role, type RoleScope } from "@/lib/auth/roles";
@@ -46,7 +46,7 @@ function TemporaryPassword({ secret, onClose }: { secret: Secret; onClose: () =>
             </button>
           </div>
           <p className="text-xs text-muted">
-            Shown <b>once</b>. Hand it over through a separate, trusted channel. The user must change it and set up an authenticator at first sign-in.
+            Shown <b>once</b>. Hand it over through a separate, trusted channel. The user must change it at first sign-in.
           </p>
         </div>
         <button type="button" onClick={onClose} className="rounded-lg p-1 text-muted hover:bg-surface hover:text-fg" aria-label="Dismiss">
@@ -159,7 +159,7 @@ interface RowUser {
   locked: boolean;
 }
 
-/** Per-row actions for platform admins: edit name/role, reset password / MFA, unlock, deactivate / reactivate. */
+/** Per-row actions for platform admins: edit name/role, reset password, unlock, deactivate / reactivate. */
 export function UserActions({ user, self, bankUser }: { user: RowUser; self: boolean; bankUser: boolean }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -217,26 +217,15 @@ export function UserActions({ user, self, bankUser }: { user: RowUser; self: boo
             <Pencil size={13} aria-hidden /> Edit
           </button>
           {user.active && (
-            <>
-              <button
-                type="button"
-                className={iconBtn}
-                disabled={working}
-                title="Issue a new temporary password"
-                onClick={() => run(`${base}/reset-password`, "POST", {}, `Reset the password of ${user.upn}? Their sessions end and they must sign in with a new temporary password.`)}
-              >
-                <KeyRound size={13} aria-hidden /> Reset password
-              </button>
-              <button
-                type="button"
-                className={iconBtn}
-                disabled={working}
-                title="Force authenticator re-enrolment"
-                onClick={() => run(`${base}/reset-mfa`, "POST", {}, `Reset the authenticator of ${user.upn}? They will set up a new one at next sign-in.`)}
-              >
-                <ShieldOff size={13} aria-hidden /> Reset MFA
-              </button>
-            </>
+            <button
+              type="button"
+              className={iconBtn}
+              disabled={working}
+              title="Issue a new temporary password"
+              onClick={() => run(`${base}/reset-password`, "POST", {}, `Reset the password of ${user.upn}? Their sessions end and they must sign in with a new temporary password.`)}
+            >
+              <KeyRound size={13} aria-hidden /> Reset password
+            </button>
           )}
           {user.locked && (
             <button type="button" className={iconBtn} disabled={working} onClick={() => run(`${base}/unlock`, "POST", {})}>

@@ -2,7 +2,7 @@ import "server-only";
 import { withPlatform, withTenant } from "@/lib/tenancy/db";
 
 /** Administrator credential resets that make the user's NEXT sign-in worth an alert. */
-export const RESET_ACTIONS = ["user.password_reset", "user.mfa_reset"] as const;
+export const RESET_ACTIONS = ["user.password_reset"] as const;
 
 export interface CredentialReset {
   action: string;
@@ -11,7 +11,7 @@ export interface CredentialReset {
 }
 
 /**
- * The most recent administrator reset of this user's password / authenticator since their last successful
+ * The most recent administrator reset of this user's password since their last successful
  * sign-in (null if none). Read from the user's own audit chain (append-only, hash-chained) through an explicit
  * RLS scope, so the flag cannot be lost by editing the user row.
  */

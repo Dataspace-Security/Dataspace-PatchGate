@@ -14,8 +14,11 @@ import {
   MAX_JOBS_PER_POLL,
   rawFromPublicKey,
   signRequest,
+  tacticalPushResponseSchema,
+  tacticalPushSchema,
   type Heartbeat,
   type JobResult,
+  type TacticalPush,
 } from "./protocol.ts";
 import { createAgent, headerValue, httpRequest, httpRequestStream, HttpNetworkError, type HttpResponse } from "./util/http.ts";
 
@@ -39,6 +42,7 @@ export class PatchGateError extends Error {
 export type HeartbeatResponse = z.infer<typeof heartbeatResponseSchema>;
 export type AuditRelayResponse = z.infer<typeof auditRelayResponseSchema>;
 export type EnrollResponse = z.infer<typeof enrollResponseSchema>;
+export type TacticalPushResponse = z.infer<typeof tacticalPushResponseSchema>;
 export type PostResultOutcome = "accepted" | "duplicate" | "unknown-job" | "rejected";
 
 const jobsResponseSchema = z.object({ jobs: z.array(z.unknown()).max(MAX_JOBS_PER_POLL) });
@@ -59,6 +63,8 @@ export interface PatchGateClient {
   postResult(jobId: string, result: JobResult, signal?: AbortSignal): Promise<PostResultOutcome>;
   heartbeat(hb: Heartbeat, signal?: AbortSignal): Promise<HeartbeatResponse>;
   getAudit(afterSeq: string, limit: number, signal?: AbortSignal): Promise<AuditRelayResponse>;
+  /** Real-time Tactical guard (protocol §8): out-of-band audit entries + approvals reset. */
+  pushTacticalEvents(push: TacticalPush, signal?: AbortSignal): Promise<TacticalPushResponse>;
   downloadPackage(sha256: string, signal?: AbortSignal): Promise<{ res: IncomingMessage; abort: (err: Error) => void }>;
 }
 
@@ -188,6 +194,13 @@ export function createPatchGateClient(opts: PatchGateClientOptions): PatchGateCl
       const res = await call("GET", `${API_PREFIX}/audit?after=${afterSeq}&limit=${lim}`, "", opts.timeoutMs, signal);
       if (res.status !== 200) throw statusError("GET audit", res);
       return parseJson("audit", res, auditRelayResponseSchema);
+    },
+
+    async pushTacticalEvents(push, signal) {
+      const body = JSON.stringify(tacticalPushSchema.parse(push));
+      const res = await call("POST", `${API_PREFIX}/tactical-events`, body, opts.timeoutMs, signal);
+      if (res.status !== 200) throw statusError("POST tactical-events", res);
+      return parseJson("tactical-events", res, tacticalPushResponseSchema);
     },
 
     async downloadPackage(sha256, signal) {

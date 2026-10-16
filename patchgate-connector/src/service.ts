@@ -5,6 +5,7 @@ import { CacheDownloader, volumeFreeBytes } from "./cache/download.ts";
 import { CacheIndex } from "./cache/cache-index.ts";
 import { CacheServer } from "./cache/server.ts";
 import { cachePathPrefix, loadTacticalApiKey, type EnrolledConfig } from "./config.ts";
+import { TacticalGuard } from "./guard/tactical-guard.ts";
 import { JobRunner } from "./jobs/runner.ts";
 import { Journal } from "./journal.ts";
 import { loadPrivateKey } from "./keys.ts";
@@ -32,6 +33,7 @@ export interface ServiceHandle {
   readonly cacheServer: CacheServer;
   readonly index: CacheIndex;
   readonly cachePort: number;
+  readonly guard: TacticalGuard;
   /** Current effective limits (after heartbeat). */
   limits(): { maxConcurrentInstalls: number; bandwidthLimitMbps: number | null };
   /** Send one heartbeat now (tests / check). */
@@ -119,6 +121,14 @@ export async function startService(cfg: EnrolledConfig, opts: ServiceOptions): P
     }
   };
   await evictNow();
+  const guard = await TacticalGuard.open({
+    tactical,
+    pg,
+    stateFile: join(cfg.stateDir, "tactical-guard.json"),
+    intervalMs: cfg.tactical.guardIntervalSec * 1000,
+    maxAgentReadsPerTick: cfg.tactical.guardMaxAgentReadsPerTick,
+    log: log.child({ component: "tactical-guard" }),
+  });
   const runner = new JobRunner({
     pg,
     journal,
@@ -143,6 +153,7 @@ export async function startService(cfg: EnrolledConfig, opts: ServiceOptions): P
       },
       log,
       trust: cfg.trust,
+      guard,
       onAgentCount: (n) => {
         agentCount = n;
       },
@@ -220,6 +231,7 @@ export async function startService(cfg: EnrolledConfig, opts: ServiceOptions): P
       cache: { files: s.files, bytes: s.bytes, freeBytes },
       tactical: tacticalStatus,
       siem: siem ? siem.status() : { configured: false, lastForwardedSeq: null, error: null },
+      guard: guard.status(),
     };
     try {
       const r = await pg.heartbeat(hb, stopAll.signal);
@@ -270,7 +282,8 @@ export async function startService(cfg: EnrolledConfig, opts: ServiceOptions): P
   runner.resendUnposted();
   await heartbeatNow(); // apply PatchGate's limits before the first jobs arrive
   const pollLoop = pollLoopFn();
-  log.info("connector running", { version: opts.version, siem: Boolean(siem) });
+  guard.start(); // first round after one interval (the allow-set arrives with the first poll)
+  log.info("connector running", { version: opts.version, siem: Boolean(siem), tacticalGuardSec: cfg.tactical.guardIntervalSec });
 
   let stopped: Promise<void> | undefined;
   return {
@@ -278,6 +291,7 @@ export async function startService(cfg: EnrolledConfig, opts: ServiceOptions): P
     cacheServer,
     index,
     cachePort: addr.port,
+    guard,
     limits: () => ({ ...effective }),
     heartbeatNow,
     stop: () => {
@@ -285,6 +299,7 @@ export async function startService(cfg: EnrolledConfig, opts: ServiceOptions): P
         log.info("shutting down");
         stopAll.abort();
         await Promise.all([pollLoop, heartbeatLoop]);
+        await guard.stop();
         await runner.shutdown(cfg.limits.shutdownGraceSec * 1000);
         await siem?.stop();
         await cacheServer.stop();

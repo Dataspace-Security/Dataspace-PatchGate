@@ -7,6 +7,7 @@ import { handleWuScanResult } from "@/lib/winupdate/hooks";
 import { onCacheJobFinished, onInstallJobFailed, onInstallJobOutcomeUnknown, onInstallJobSucceeded, scheduleInstallRetry } from "@/lib/deploy/connector-outcomes";
 import { applyCollect, applyScan } from "./handlers-inventory";
 import { applySyncAgents } from "./handlers-agents";
+import { applyTacticalAudit, checkApprovalDrift } from "./tactical-activity";
 import { MAX_JOB_ATTEMPTS, isInstallJob, retryDelayMs } from "./policy";
 import { enqueueJob } from "./queue";
 import { jobPayloadSchemas, type JobResult, type JobType, type resultSchemas } from "./protocol";
@@ -54,8 +55,18 @@ export async function applyJobOutcome(job: StoredJob, res: JobResult, now: Date)
     case "SCAN":
       await applyScan(job, result as ResultOf<"SCAN">, now);
       return;
-    case "COLLECT":
+    case "COLLECT": {
       await applyCollect(job, result as ResultOf<"COLLECT">, now);
+      // Tactical seal: approvals PatchGate did not set are alerted and reset (tactical-activity.ts).
+      const observedAt = job.deliveredAt && job.deliveredAt <= now ? job.deliveredAt : now;
+      await checkApprovalDrift(job, result as ResultOf<"COLLECT">, observedAt, now);
+      return;
+    }
+    case "TACTICAL_AUDIT_SYNC":
+      await applyTacticalAudit(job, result as ResultOf<"TACTICAL_AUDIT_SYNC">, now);
+      return;
+    case "TACTICAL_GUARD_SYNC":
+      log.info("connector.guard_sync.done", { jobId: job.id, tenantId: job.tenantId, connectorId: job.connectorId, ...(result as ResultOf<"TACTICAL_GUARD_SYNC">) });
       return;
     case "DEPLOY_WINDOWS":
     case "DEPLOY_PACKAGE":
@@ -113,7 +124,7 @@ async function onJobFailed(job: StoredJob, error: string, retryable: boolean, no
   } else if (job.type === "CACHE_PACKAGE") {
     await onCacheJobFinished(job, { ok: false, error: final });
   }
-  // SYNC / SCAN / COLLECT / WU_SCAN / RESET: nothing to undo; the schedules try again on their next round.
+  // SYNC / SCAN / COLLECT / WU_SCAN / RESET / TACTICAL_*_SYNC: nothing to undo; the schedules (or the next heartbeat) try again.
 }
 
 /** Queue the retry of `job` unless one exists already (idempotency key retryOfJobId). */

@@ -8,14 +8,10 @@ import { clientIp } from "@/lib/ratelimit/limiter";
 import { AuthError, requireSameOrigin } from "./session";
 import { CHALLENGE_TTL_MS, type LoginStep } from "./local-login";
 import type { ClientMeta } from "./session-store";
-import { MFA_COOKIE, SESSION_COOKIE } from "./tokens";
+import { CHALLENGE_COOKIE, SESSION_COOKIE } from "./tokens";
 
 /** What the browser sees for each local sign-in step (never the raw challenge or session tokens). */
-export type LoginStepView =
-  | { step: "verify" }
-  | { step: "enroll"; secret: string; otpauthUri: string; qrSvgDataUrl: string }
-  | { step: "change-password" }
-  | { step: "done"; redirect: string };
+export type LoginStepView = { step: "change-password" } | { step: "done"; redirect: string };
 
 function json(body: unknown, status: number): NextResponse {
   const res = NextResponse.json(body, { status });
@@ -31,20 +27,19 @@ export function failJson(error: string, status: number): NextResponse {
 export function loginStepResponse(r: LoginStep): NextResponse {
   if (!r.ok) {
     const res = failJson(r.error, r.status);
-    if (r.restart) res.cookies.delete({ name: MFA_COOKIE, path: "/" });
+    if (r.restart) res.cookies.delete({ name: CHALLENGE_COOKIE, path: "/" });
     return res;
   }
   if (r.step === "done") {
     const res = json({ success: true, data: { step: "done", redirect: r.returnTo } satisfies LoginStepView, error: null }, 200);
-    res.cookies.delete({ name: MFA_COOKIE, path: "/" });
+    res.cookies.delete({ name: CHALLENGE_COOKIE, path: "/" });
     // No Max-Age (dies with the browser); idle + absolute expiry are enforced server-side.
     res.cookies.set(SESSION_COOKIE, r.sessionToken, { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
     return res;
   }
-  const view: LoginStepView =
-    r.step === "enroll" ? { step: "enroll", secret: r.secret, otpauthUri: r.otpauthUri, qrSvgDataUrl: r.qrSvgDataUrl } : { step: r.step };
+  const view: LoginStepView = { step: r.step };
   const res = json({ success: true, data: view, error: null }, 200);
-  res.cookies.set(MFA_COOKIE, r.challengeToken, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: CHALLENGE_TTL_MS / 1000 });
+  res.cookies.set(CHALLENGE_COOKIE, r.challengeToken, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: CHALLENGE_TTL_MS / 1000 });
   return res;
 }
 
@@ -68,7 +63,7 @@ export function clientMeta(req: Request): ClientMeta {
 export async function localAuthRoute<T>(
   req: Request,
   schema: z.ZodType<T>,
-  run: (input: T, ctx: { meta: ClientMeta; mfaToken: string | undefined }) => Promise<LoginStep>,
+  run: (input: T, ctx: { meta: ClientMeta; challengeToken: string | undefined }) => Promise<LoginStep>,
 ): Promise<Response> {
   const blocked = guardLocalAuth(req);
   if (blocked) return blocked;
@@ -78,8 +73,8 @@ export async function localAuthRoute<T>(
     return failJson(`Invalid request — ${first?.path.join(".") || "body"}: ${first?.message ?? "malformed"}`, 400);
   }
   try {
-    const mfaToken = (await cookies()).get(MFA_COOKIE)?.value;
-    return loginStepResponse(await run(parsed.data, { meta: clientMeta(req), mfaToken }));
+    const challengeToken = (await cookies()).get(CHALLENGE_COOKIE)?.value;
+    return loginStepResponse(await run(parsed.data, { meta: clientMeta(req), challengeToken }));
   } catch (err: unknown) {
     console.error("[patchgate] local sign-in step failed:", describeError(err));
     return failJson("Sign-in is temporarily unavailable. Please try again.", 500);

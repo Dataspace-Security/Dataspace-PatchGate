@@ -17,9 +17,14 @@
      AddScanPackageService), searches "IsInstalled=0 and IsHidden=0" with ServerSelection=3 (ssOthers) +
      that ServiceID, and ALWAYS unregisters the service again (also stale ones from a crashed earlier run).
   4. Prints exactly one line: PATCHGATE_RESULT=<json>
-       {"ok":true,"updates":[{updateId,revision,kb,title,msrcSeverity,classification,
+       {"ok":true,"wuLock":{...},"updates":[{updateId,revision,kb,title,msrcSeverity,classification,
                                files:[{url,name,size,sha1,sha256}]}]}
-       {"ok":false,"error":"..."}
+       {"ok":false,"error":"...","wuLock":{...}}
+     wuLock (read-only check, done first, never fails the scan): is Windows Update locked so the PC cannot
+     take updates from Microsoft by itself (the values Install-PatchGateAgent.ps1 sets)?
+       {"locked":bool,"issues":["..."],"lastOutsideInstall":{"at":"<UTC ISO>","title":"..."}|null}
+     lastOutsideInstall is BEST-EFFORT: the newest successful install in the Windows Update history whose
+     client is not PatchGate / wusa (e.g. Automatic Updates, Update Orchestrator, Defender, Tactical agent).
      Only .msu/.cab full (non-delta) payloads are reported; PatchGate fetches them, the PC never does.
 
   Inputs (environment variables only):
@@ -40,6 +45,72 @@ $MaxUpdates = 1000
 $MaxFilesPerUpdate = 20
 $SidSystem = 'S-1-5-18'
 $SidAdmins = 'S-1-5-32-544'
+
+# BEGIN PatchGate WU lock values (identical block in installers/pc/Install-PatchGateAgent.ps1)
+$WuLockServer = 'http://patchgate-wu-locked.invalid'
+$WuLockValues = @(
+    @{ Key = 'WindowsUpdate'; Name = 'WUServer'; Type = 'String'; Value = $WuLockServer },
+    @{ Key = 'WindowsUpdate'; Name = 'WUStatusServer'; Type = 'String'; Value = $WuLockServer },
+    @{ Key = 'WindowsUpdate'; Name = 'DoNotConnectToWindowsUpdateInternetLocations'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate'; Name = 'DisableDualScan'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate'; Name = 'SetPolicyDrivenUpdateSourceForFeatureUpdates'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate'; Name = 'SetPolicyDrivenUpdateSourceForQualityUpdates'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate'; Name = 'SetPolicyDrivenUpdateSourceForDriverUpdates'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate'; Name = 'SetPolicyDrivenUpdateSourceForOtherUpdates'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate'; Name = 'ExcludeWUDriversInQualityUpdate'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate'; Name = 'SetDisableUXWUAccess'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate\AU'; Name = 'UseWUServer'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate\AU'; Name = 'UseUpdateClassPolicySource'; Type = 'DWord'; Value = 1 },
+    @{ Key = 'WindowsUpdate\AU'; Name = 'NoAutoUpdate'; Type = 'DWord'; Value = 1 }
+)
+# END PatchGate WU lock values
+$DefenderUpdateKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Signature Updates'
+$PolicyRoot = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows'
+# Windows Update history clients that are PatchGate itself (install script: wusa.exe / DISM).
+$OwnClientRe = '^(PatchGate|wusa|.*Standalone Installer.*)$'
+
+# Read-only: are the lock values in place? Never throws (a broken check is reported as an issue).
+function Get-WuLockState {
+    $issues = New-Object System.Collections.ArrayList
+    try {
+        foreach ($v in $WuLockValues) {
+            $key = Join-Path $PolicyRoot $v.Key
+            $cur = $null
+            try { $cur = (Get-ItemProperty -LiteralPath $key -Name $v.Name -ErrorAction Stop).($v.Name) } catch { }
+            if ($null -eq $cur) { [void]$issues.Add(('{0}\{1} is not set (must be {2})' -f $v.Key, $v.Name, $v.Value)) }
+            elseif ([string]$cur -ne [string]$v.Value) { [void]$issues.Add(('{0}\{1} is {2} (must be {3})' -f $v.Key, $v.Name, $cur, $v.Value)) }
+        }
+        $order = $null
+        try { $order = [string](Get-ItemProperty -LiteralPath $DefenderUpdateKey -Name 'FallbackOrder' -ErrorAction Stop).FallbackOrder } catch { }
+        if (-not $order -or $order -match 'MicrosoftUpdateServer') {
+            [void]$issues.Add('Defender definition source (FallbackOrder) not set by PatchGate: Defender may update from Microsoft Update')
+        }
+        $wu = Get-CimInstance -ClassName Win32_Service -Filter "Name='wuauserv'" -ErrorAction SilentlyContinue
+        if (-not $wu) { [void]$issues.Add('Windows Update service (wuauserv) not found') }
+        elseif ($wu.StartMode -eq 'Disabled') { [void]$issues.Add('Windows Update service (wuauserv) is Disabled: PatchGate cannot scan/install (must be Manual)') }
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+        if ($os -and [string]$os.Caption -match '\bHome\b') { [void]$issues.Add('Windows Home edition ignores Windows Update policies') }
+    } catch {
+        [void]$issues.Add('lock check failed: ' + ($_.Exception.Message -replace '[\r\n]+', ' '))
+    }
+    $outside = $null
+    try {
+        $searcher = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
+        $total = $searcher.GetTotalHistoryCount()
+        if ($total -gt 0) {
+            foreach ($h in $searcher.QueryHistory(0, [Math]::Min($total, 200))) {
+                # Operation 1 = installation; ResultCode 2/3 = succeeded (with errors); newest first.
+                if ($h.Operation -ne 1 -or ($h.ResultCode -ne 2 -and $h.ResultCode -ne 3)) { continue }
+                if ([string]$h.ClientApplicationID -match $OwnClientRe) { continue }
+                $t = [string]$h.Title
+                $outside = [ordered]@{ at = ([datetime]$h.Date).ToString('yyyy-MM-ddTHH:mm:ssZ'); title = $t.Substring(0, [Math]::Min(300, $t.Length)) }
+                break
+            }
+        }
+    } catch { }
+    $list = @($issues | Select-Object -First 20 | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) })
+    return [ordered]@{ locked = ($issues.Count -eq 0); issues = $list; lastOutsideInstall = $outside }
+}
 
 function Write-Result($Object) {
     $json = $Object | ConvertTo-Json -Depth 8 -Compress
@@ -180,6 +251,8 @@ $SearchBlock = {
 $runDir = $null
 $manager = $null
 $serviceId = $null
+$wuLock = Get-WuLockState
+$wuLockJson = (ConvertTo-Json -InputObject $wuLock -Depth 4 -Compress) -replace '[\r\n]', ' '
 try {
     $sha = $env:PG_SHA256
     Assert-Match 'PG_SHA256' $sha '[a-f0-9]{64}'
@@ -237,12 +310,12 @@ try {
     Remove-Job -Job $job -Force
     if (-not $json.StartsWith('[')) { throw 'scan produced no result' }
     # Embed the job's JSON array verbatim (it is already compact JSON).
-    Write-Output ('PATCHGATE_RESULT={"ok":true,"updates":' + ($json -replace '[\r\n]', ' ') + '}')
+    Write-Output ('PATCHGATE_RESULT={"ok":true,"wuLock":' + $wuLockJson + ',"updates":' + ($json -replace '[\r\n]', ' ') + '}')
     exit 0
 }
 catch {
     $msg = ($_.Exception.Message -replace '[\r\n]+', ' ')
-    Write-Result ([ordered]@{ ok = $false; error = $msg.Substring(0, [Math]::Min(1500, $msg.Length)) })
+    Write-Result ([ordered]@{ ok = $false; error = $msg.Substring(0, [Math]::Min(1500, $msg.Length)); wuLock = $wuLock })
     exit 1
 }
 finally {

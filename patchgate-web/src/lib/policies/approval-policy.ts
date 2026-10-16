@@ -12,8 +12,8 @@ const DAY_MS = 86_400_000;
 
 export const bankPolicySchema = z
   .object({
-    // Platform rule: always true (at least one approver from the bank); false is refused (DB CHECK too).
-    requireBankApproval: z.literal(true, { error: "a bank approver is always required" }),
+    // "Approval required" (default ON). OFF = an admin's request is approved on submit (no second person).
+    requireBankApproval: z.boolean(),
     approvalExpiryDays: z.coerce.number().int().min(0).max(MAX_APPROVAL_EXPIRY_DAYS),
     maxTargetsPerCr: z.coerce.number().int().min(0).max(1_000_000),
     defaultRebootPolicy: z.enum(["NEVER", "REQUIRED", "ALWAYS"]),

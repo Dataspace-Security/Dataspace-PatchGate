@@ -2,7 +2,7 @@ import "server-only";
 import { env, type Env } from "@/lib/env";
 import type { EncKeyring } from "./secret-box";
 
-/** The TOTP-secret keyring from the environment: AUTH_ENC_KEY (current) + optional AUTH_ENC_KEY_PREVIOUS. */
+/** The AUTH_ENC_KEY keyring (webhook URLs at rest) from the environment: AUTH_ENC_KEY (current) + optional AUTH_ENC_KEY_PREVIOUS. */
 export function authKeyring(e: Pick<Env, "AUTH_ENC_KEY" | "AUTH_ENC_KEY_PREVIOUS"> = env()): EncKeyring {
   if (!e.AUTH_ENC_KEY) throw new Error("AUTH_ENC_KEY is not configured");
   return { current: e.AUTH_ENC_KEY, previous: e.AUTH_ENC_KEY_PREVIOUS ?? null };

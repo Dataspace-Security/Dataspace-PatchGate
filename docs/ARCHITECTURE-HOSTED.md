@@ -10,8 +10,8 @@ the patch pipeline, verification and maker-checker rules there still apply.
 | Hosting | PatchGate runs on **our** server and domain. Banks are clients. |
 | Banks per server | **Several** (multi-tenant). A bank sees only its own PCs, requests, approvals and audit. |
 | Network | Inside each bank, only the **PatchGate Connector** (on the Tactical host) talks to the outside, and only to our domain/IP, **outbound HTTPS**. Nothing connects into a bank. Tactical server and PCs stay offline. |
-| Approvals | Our team **and** bank staff. Our admin (or a bank admin) prepares, a **bank admin** of that bank must approve — always (not configurable). |
-| Login | PatchGate's own accounts: password + **mandatory MFA (TOTP)**, lockout, audited. No external IdP needed. |
+| Approvals | Our team **and** bank staff. Our admin (or a bank admin) prepares, a **bank admin** of that bank must approve while "Approval required" is ON (default; an admin can switch it off per bank — audited + notified). |
+| Login | PatchGate's own accounts: **password-only by design** (strong passwords, lockout, session rules), audited. No external IdP needed; banks that need MFA use their SSO (OIDC, IdP-enforced MFA). |
 | Internet | Only PatchGate (our server) downloads from vendors. Unchanged. |
 
 ## 2. Picture (production scale)
@@ -22,7 +22,7 @@ the patch pipeline, verification and maker-checker rules there still apply.
                                      ▼
 ┌═════════════════════ PatchGate platform — OUR data centre / cloud, our domain ═════════════════════┐
 ║                                                                                                     ║
-║  Bank staff + our staff (browser, MFA)        Connectors (signed requests, outbound from banks)     ║
+║  Bank staff + our staff (browser, password)   Connectors (signed requests, outbound from banks)     ║
 ║                │ https                                       │ https                                ║
 ║                ▼                                             ▼                                      ║
 ║        ┌──────────────── Load balancer / WAF  (TLS, rate limits, IP allow-list per bank) ───┐      ║
@@ -129,15 +129,15 @@ Two fixed roles, the same for our team and inside every bank (`src/lib/auth/role
 | Bank admin | own bank | manage bank users and settings, create change requests, **approve / reject** them (checker) |
 | Bank auditor | own bank | read-only, reports |
 
-Maker ≠ checker is always enforced. Every change request needs at least one approving admin from the bank itself — a platform rule that no admin can turn off (DB CHECK `Tenant_requireBankApproval_always`). Emergency / large requests need two distinct admins (at least one from the bank).
-Login: scrypt-hashed password (≥ 14 chars) + TOTP (`AUTH_MFA=required`, the default; `off` = password only, pre-go-live only), lockout after 5 failures, 15-min idle and 8-h absolute sessions.
+Maker ≠ checker is always enforced. With "Approval required" ON (the default) every change request needs at least one approving admin from the bank itself; emergency / large requests need two distinct admins (at least one from the bank). An ADMIN may switch it OFF per bank (audited `bank_policy.approval_switched`, notified): requests are then auto-approved on submit (`change_request.approval_skipped`), see SECURITY.md R13.
+Login: password-only by design — scrypt-hashed password (≥ 14 chars), lockout after 5 failures, 15-min idle and 8-h absolute sessions; banks needing MFA use their SSO (OIDC), where the IdP enforces it.
 Every login is audited.
 
 ## 6. Delivery phases
 
 | # | Phase | Result |
 |---|---|---|
-| 1 | Tenancy + own login | Tenant model + RLS, tenant-scoped data layer, users/roles above, password + TOTP login, bank switcher for our staff |
+| 1 | Tenancy + own login | Tenant model + RLS, tenant-scoped data layer, users/roles above, password login, bank switcher for our staff |
 | 2 | Connector protocol on PatchGate | enrolment, signed requests, signed job queue, inventory/result ingestion; worker produces jobs instead of calling Tactical |
 | 3 | Connector service | standalone `patchgate-connector` (Node, single binary/container): job runner over the local Tactical API, package cache + internal HTTPS, SIEM relay, heartbeat |
 | 4 | Lab | PatchGate on the host = "our server"; Tactical + connector on an isolated bank network whose only egress is the host; Sandbox PC end-to-end |

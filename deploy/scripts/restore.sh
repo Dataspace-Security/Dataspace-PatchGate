@@ -12,7 +12,7 @@
 # Requirements: run from deploy/, stack up (at least `db`), .env.production present, the backup image
 # built (docker compose build backup). Plaintext is never written to disk: decrypt streams into pg_restore.
 # The secrets in ./secrets must be the ones the backup was taken with (AUDIT_HMAC_KEY verifies the audit
-# chain, AUTH_ENC_KEY decrypts TOTP secrets) — this script compares fingerprints from the manifest.
+# chain, AUTH_ENC_KEY decrypts notification webhook URLs) — this script compares fingerprints from the manifest.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -77,7 +77,7 @@ if [ -r "$MANIFEST" ] && [ -r secrets/fingerprints.sha256 ]; then
     fi
   done < secrets/fingerprints.sha256
   if [ $mismatch -eq 1 ]; then
-    echo "restore: audit_hmac_key mismatch => audit chain verification fails; auth_enc_key mismatch => TOTP enrolments unusable."
+    echo "restore: audit_hmac_key mismatch => audit chain verification fails; auth_enc_key mismatch => notification webhook URLs unreadable (re-add them)."
     [ $YES -eq 1 ] || die "restore the matching secrets from escrow first (or pass --yes to continue anyway)"
   else
     say "secrets fingerprints match the backup manifest"

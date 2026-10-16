@@ -1,14 +1,12 @@
-// Lab-only client for PatchGate's REAL HTTP API, signed in as a lab user with password (+ TOTP when the
-// server runs AUTH_MFA=required; with AUTH_MFA=off — the lab default — the password step already signs in).
-// Credentials live in lab/patchgate/lab-users.json (gitignored, written by users.sh); the TOTP secret is
-// captured at the user's first sign-in (enrolment) and stored there too, so scripts and the Playwright
-// lab tests can produce codes. Sessions are cached in lab/patchgate/.sessions.json (gitignored).
+// Lab-only client for PatchGate's REAL HTTP API, signed in as a lab user with username + password (local
+// sign-in is password-only). Credentials live in lab/patchgate/lab-users.json (gitignored, written by users.sh):
+// { "users": { "<upn>": { "password", "role", "tenant" } } }. Sessions are cached in lab/patchgate/.sessions.json
+// (gitignored).
 //
 //   node lab/patchgate/pg-api.mjs <upn> GET  /api/admin/tenants
 //   node lab/patchgate/pg-api.mjs <upn> POST /api/admin/tenants '{"slug":"bank-a","name":"Bank A"}'
-//   node lab/patchgate/pg-api.mjs totp <upn>          # current 6-digit code (manual browser sign-in)
+//   node lab/patchgate/pg-api.mjs login <upn>          # sign in and cache the session
 // Needs NODE_EXTRA_CA_CERTS=lab/certs/out/ca.crt (env.sh sets it). Prints the JSON body; exit 1 if !success.
-import { createHmac } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,46 +18,6 @@ const BASE = process.env.PG_URL ?? "https://patchgate.patchgate-lab.internal:344
 
 const readJson = (f, d) => (existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : d);
 const writeJson = (f, v) => writeFileSync(f, JSON.stringify(v, null, 2), { mode: 0o600 });
-
-export function base32Decode(s) {
-  const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let bits = 0, value = 0;
-  const out = [];
-  for (const ch of s.replace(/[\s=-]/g, "").toUpperCase()) {
-    value = ((value << 5) | A.indexOf(ch)) & 0xffff;
-    bits += 5;
-    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
-  }
-  return Buffer.from(out);
-}
-
-export function totpAt(secret, step) {
-  const msg = Buffer.alloc(8);
-  msg.writeBigUInt64BE(BigInt(step));
-  const mac = createHmac("sha1", base32Decode(secret)).update(msg).digest();
-  const o = mac[mac.length - 1] & 0x0f;
-  const bin = ((mac[o] & 0x7f) << 24) | (mac[o + 1] << 16) | (mac[o + 2] << 8) | mac[o + 3];
-  return String(bin % 1_000_000).padStart(6, "0");
-}
-
-const stepNow = () => Math.floor(Date.now() / 30_000);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/** A fresh, never-used TOTP step for this user (codes are single use per step, server-enforced). */
-export async function freshCode(upn) {
-  for (;;) {
-    const users = readJson(USERS, { users: {} });
-    const u = users.users[upn];
-    if (!u?.totpSecret) throw new Error(`no TOTP secret recorded for ${upn}`);
-    const s = stepNow();
-    if (s > (u.lastStep ?? 0)) {
-      u.lastStep = s;
-      writeJson(USERS, users);
-      return totpAt(u.totpSecret, s);
-    }
-    await sleep(((s + 1) * 30_000 - Date.now()) + 500);
-  }
-}
 
 function cookieHeader(jar) {
   return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join("; ");
@@ -101,20 +59,7 @@ function saveSession(upn, jar) {
   return jar;
 }
 
-/** The server's second-factor mode from /api/health: "required" | "off" | "n/a" (null if unreachable). */
-export async function serverMfa() {
-  try {
-    const r = await fetch(BASE + "/api/health");
-    return (await r.json()).mfa ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Sign in: password, then (AUTH_MFA=required) the TOTP code — enrolling the authenticator on first use.
- * With AUTH_MFA=off the password step returns "done" and no code is involved. Returns the cookie jar.
- */
+/** Sign in with username + password (one step). Returns the cookie jar. */
 export async function login(upn) {
   const users = readJson(USERS, { users: {} });
   const u = users.users[upn];
@@ -122,18 +67,10 @@ export async function login(upn) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const jar = {};
     const p = await raw(jar, "POST", "/api/auth/password", { upn, password: u.password, returnTo: "/" });
-    if (!p.json.success) throw new Error(`password step for ${upn}: ${p.status} ${p.json.error}`);
-    if (p.json.data.step === "done") return saveSession(upn, jar); // AUTH_MFA=off: password only
-    if (p.json.data.step === "change-password") throw new Error(`${upn} must change the password first`);
-    if (p.json.data.step === "enroll") {
-      const all = readJson(USERS, { users: {} });
-      all.users[upn].totpSecret = p.json.data.secret.replace(/\s/g, "");
-      writeJson(USERS, all);
-    }
-    const t = await raw(jar, "POST", "/api/auth/totp", { code: await freshCode(upn) });
-    if (t.json.success && t.json.data.step === "done") return saveSession(upn, jar);
-    if (t.json.success && t.json.data.step === "change-password") throw new Error(`${upn} must change the password first`);
-    console.error(`totp step for ${upn}: ${t.status} ${t.json.error} — retrying`);
+    if (p.json.success && p.json.data.step === "done") return saveSession(upn, jar);
+    if (p.json.success && p.json.data.step === "change-password") throw new Error(`${upn} must change the password first`);
+    if (p.status !== 500) throw new Error(`sign-in for ${upn}: ${p.status} ${p.json.error}`);
+    console.error(`sign-in for ${upn}: ${p.status} ${p.json.error} — retrying`);
   }
   throw new Error(`could not sign in ${upn}`);
 }
@@ -155,9 +92,7 @@ export async function api(upn, method, path, body) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [a, b, c, d] = process.argv.slice(2);
   try {
-    if (a === "totp") {
-      console.log(await freshCode(b));
-    } else if (a === "login") {
+    if (a === "login") {
       await login(b);
       console.log(`signed in ${b}`);
     } else {

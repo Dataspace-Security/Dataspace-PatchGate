@@ -34,7 +34,7 @@ read -rs GH_TOKEN && curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept:
 bash install-patchgate-test.sh
 ```
 
-Later: `bash install-patchgate-test.sh --status`, `--code approver`, `--reinstall` (erase + install fresh),
+Later: `bash install-patchgate-test.sh --status`, `--reinstall` (erase + install fresh),
 `--cleanup`. Options: `--ref <branch|tag|commit>` (default `main`), `--dir <folder>` (default `~/patchgate-test`).
 The clone, build logs and the kit (with `logins.txt`) live under `~/patchgate-test/`.
 
@@ -87,14 +87,8 @@ The browser will warn about the certificate (test CA): click **Advanced → Cont
 
 ## Sign in
 
-`logins.txt` lists the four test accounts with their passwords. Every sign-in also asks for a 6-digit code:
-
-```bash
-./test-on-my-pc.sh --code approver      # or: platform-admin | bank-admin | viewer
-```
-
-(or add the TOTP secret from `logins.txt` to Microsoft/Google Authenticator as a "setup key").
-A code works only once — if refused, wait 30 seconds and take the next one.
+`logins.txt` lists the four test accounts with their passwords. Sign-in is the sign-in name + password only
+(PatchGate local sign-in is password-only by design; banks that need MFA use their own SSO).
 
 | Account | Who it is |
 |---|---|

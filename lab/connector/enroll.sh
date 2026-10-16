@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Onboard "Bank A" on the lab PatchGate through its REAL admin API (signed in as the lab platform admin
-# with password + TOTP), then enrol the Bank A connector with a one-time code:
+# with username + password), then enrol the Bank A connector with a one-time code:
 #   1. bank "bank-a" (POST /api/admin/tenants) + its users (lab/patchgate/users.sh → create-user.ts)
 #   2. Bank A opts in to every verified third-party app (POST /api/apps/{id}/enable, bank selected)
 #   3. one-time enrolment code for site "Bank A HQ" (POST /api/connector/admin/enrollments)

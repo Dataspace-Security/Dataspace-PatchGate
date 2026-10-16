@@ -387,7 +387,7 @@ export async function runWorkerTick(deps: TickDeps): Promise<TickResult> {
   });
   await step("connectorSchedule", async () => {
     const r = await scheduleConnectorInventory(new Date());
-    return `sync ${r.sync}, scan ${r.scan}, collect ${r.collect}, wu ${r.wuScan}`;
+    return `sync ${r.sync}, scan ${r.scan}, collect ${r.collect}, wu ${r.wuScan}, tactical-audit ${r.tacticalAudit}, approval-check ${r.approvalCheck}`;
   });
   await step("connectorDiscovery", async () => `rebuilt ${await rebuildConnectorDiscovery()}`);
 

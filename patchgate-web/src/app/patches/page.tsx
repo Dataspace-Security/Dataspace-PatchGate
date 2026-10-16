@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { canMake } from "@/lib/auth/roles";
 import { eligibilityErrors } from "@/lib/approvals/eligibility";
-import { enabledAppIds, toEligible } from "@/lib/approvals/load-eligible";
+import { enabledAppIds, toEligible, requiresOfflineWindowsScan } from "@/lib/approvals/load-eligible";
 import { withTenant } from "@/lib/tenancy";
 import { getPageTenant } from "@/lib/tenancy/page";
 import { Loading, PageHeader } from "@/components/ui";
@@ -44,7 +44,7 @@ async function PatchList({ searchParams }: { searchParams: Promise<Search> }) {
       orderBy: { order: "asc" },
       include: { windows: { where: { tenantId }, select: { id: true, name: true } } },
     });
-    const eligible = await toEligible(patches, await enabledAppIds(tx, tenantId), tx);
+    const eligible = await toEligible(patches, await enabledAppIds(tx, tenantId), tx, { requireOfflineScan: await requiresOfflineWindowsScan(tx, tenantId) });
     return { patches, rings, eligible };
   });
   const rows: PatchRow[] = patches.map((p, i) => {

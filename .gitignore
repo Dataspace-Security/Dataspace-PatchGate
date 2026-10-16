@@ -144,5 +144,5 @@ kits/*/out/
 kits/*/logs/
 kits/**/logins.txt
 
-# Screenshots (Playwright runs; TOTP-enrol shots show lab QR secrets)
+# Screenshots (Playwright runs)
 **/screenshots/

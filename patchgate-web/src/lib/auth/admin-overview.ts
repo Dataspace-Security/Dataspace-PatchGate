@@ -8,7 +8,6 @@ export const ADMIN_ACTIONS = [
   "user.deactivated",
   "user.reactivated",
   "user.password_reset",
-  "user.mfa_reset",
   "user.reset_denied",
   "user.unlocked",
   "tenant.created",

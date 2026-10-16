@@ -6,7 +6,9 @@ import {
   agentDetailSchema,
   agentSchema,
   agentSoftwareSchema,
+  auditLogPageSchema,
   winUpdateSchema,
+  type TacticalAuditLogPage,
   type SoftwareItem,
   type TacticalAgent,
   type TacticalAgentDetail,
@@ -50,6 +52,8 @@ export interface TacticalClient {
   getSoftware(agentId: string): Promise<SoftwareItem[]>;
   refreshSoftware(agentId: string): Promise<void>;
   runScript(agentId: string, input: RunScriptInput): Promise<string>;
+  /** One page of Tactical's audit log, newest first (read-only; needs can_view_auditlogs). */
+  auditLogPage(page: number, rowsPerPage: number): Promise<TacticalAuditLogPage>;
 }
 
 export interface TacticalClientOptions {
@@ -143,6 +147,13 @@ export function createTacticalClient(opts: TacticalClientOptions): TacticalClien
         (input.timeoutSec + 30) * 1000,
       );
       return typeof out === "string" ? out : JSON.stringify(out);
+    },
+    auditLogPage: async (page, rowsPerPage) => {
+      if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(rowsPerPage) || rowsPerPage < 1 || rowsPerPage > 1000) {
+        throw new TacticalError("invalid audit log page", 400);
+      }
+      // Tactical's audit view is a PATCH with a pagination body (logs/views.py GetAuditLogs); newest first.
+      return call("PATCH", "/logs/audit/", auditLogPageSchema, { pagination: { sortBy: "id", descending: true, page, rowsPerPage } });
     },
   };
 }

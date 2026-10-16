@@ -56,6 +56,13 @@ export const tacticalSchema = z.object({
   statusIntervalSec: positiveInt.default(300),
   /** Parallel Tactical calls inside one SCAN/COLLECT batch. */
   maxParallelCalls: positiveInt.max(64).default(8),
+  /**
+   * Real-time Tactical guard (protocol §8): every guardIntervalSec the connector reads Tactical's audit log and
+   * update approvals, resets approvals PatchGate did not authorise and reports both. 0 = off (backstop only).
+   */
+  guardIntervalSec: z.number().int().min(0).max(600).default(30),
+  /** Cap on per-agent update reads (GET /winupdate/<agent>/) in one guard tick (Tactical database load). */
+  guardMaxAgentReadsPerTick: positiveInt.max(500).default(25),
 });
 
 export const cacheSchema = z.object({

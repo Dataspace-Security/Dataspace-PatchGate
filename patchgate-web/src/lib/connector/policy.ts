@@ -29,6 +29,8 @@ export function isInstallJob(t: JobType): t is InstallJobType {
 export const BODY_LIMITS = {
   enroll: 4 * 1024,
   heartbeat: 32 * 1024,
+  /** Real-time Tactical guard push: <= 200 audit entries + <= 200 approval resets. */
+  tacticalEvents: 1024 * 1024,
   result: 32 * 1024 * 1024,
   get: 0,
 } as const;

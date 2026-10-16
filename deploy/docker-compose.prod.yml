@@ -452,7 +452,7 @@ services:
       DB_USER: ${DB_OWNER_USER:-patchgate_owner}
       DB_PASSWORD_FILE: /run/secrets/db_owner_password
       AUDIT_HMAC_KEY_FILE: /run/secrets/audit_hmac_key     # admin CLI writes audit events
-      AUTH_ENC_KEY_FILE: /run/secrets/auth_enc_key         # admin CLI (user bootstrap / MFA reset)
+      AUTH_ENC_KEY_FILE: /run/secrets/auth_enc_key         # admin CLI (user bootstrap / key rotation)
       PATCHGATE_EPHEMERAL_SECRETS: TACTICAL_API_KEY WORKER_TOKEN
       JOB_SIGNER: disabled
     secrets:

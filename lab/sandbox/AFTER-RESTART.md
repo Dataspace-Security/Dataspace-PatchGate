@@ -38,7 +38,7 @@ it should list one `GET /repo/tactical/agent/2.10.0/…` download.
 
 ## 3. Sync → inventory → discovery (PatchGate UI)
 Open `https://patchgate.patchgate-lab.internal:3443`. Sign in as `lab-admin@patchgate.lab` (password in
-`lab/patchgate/lab-users.json`, code from `node lab/patchgate/pg-api.mjs totp lab-admin@patchgate.lab`).
+`lab/patchgate/lab-users.json`; `node lab/patchgate/show-login.mjs lab-admin@patchgate.lab` prints it).
 Choose **Acting for bank → Bank A**.
 ```bash
 bash lab/connector/cache.sh --sync      # optional: SYNC_AGENTS now instead of on the hourly schedule
@@ -54,8 +54,7 @@ bash lab/connector/cache.sh --sync      # optional: SYNC_AGENTS now instead of o
    `RESET_APPROVALS` withdraws stale ones.
 
 ## 4. Maker / checker / deploy (third-party + agent upgrade)
-1. Sign in as **`lab-operator@patchgate.lab`** (maker; the first sign-in enrols TOTP and the secret is shown
-   on screen). Choose Bank A. **Patches → New change request**: ring Ring0-Test, pick Firefox, PuTTY and the
+1. Sign in as **`lab-operator@patchgate.lab`** (maker; password only). Choose Bank A. **Patches → New change request**: ring Ring0-Test, pick Firefox, PuTTY and the
    agent upgrade → submit.
 2. The maker cannot approve their own request. Sign in as **`approver@bank-a.lab`** (bank checker) →
    **Change requests → the request → Approve**.

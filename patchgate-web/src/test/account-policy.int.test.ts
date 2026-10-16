@@ -10,9 +10,8 @@ configureTestEnv({ AUTH_MODE: "local", AUTH_ENC_KEY: "ab".repeat(32) });
 vi.setConfig({ testTimeout: 300_000, hookTimeout: 120_000 });
 
 const { prisma } = await import("@/lib/db");
-const { beginPasswordLogin, verifyTotpStep, changePasswordStep } = await import("@/lib/auth/local-login");
+const { beginPasswordLogin, changePasswordStep } = await import("@/lib/auth/local-login");
 const { hashPassword } = await import("@/lib/auth/password");
-const { base32Decode, hotp, totpStep } = await import("@/lib/auth/totp");
 const { updateUser } = await import("@/lib/auth/admin-service");
 const { updateSecurityPolicy, getSecurityPolicy } = await import("@/lib/policies/security-store");
 const { disableInactiveUsers } = await import("@/lib/policies/inactivity");
@@ -25,7 +24,6 @@ const NEW_PW = "lantern-Quartz-9-meadow-falcon";
 const DAY = 86_400_000;
 const NOW = new Date();
 const at = (seconds: number) => new Date(NOW.getTime() + seconds * 1000);
-const codeFor = (secret: string, when: Date) => hotp(base32Decode(secret.replace(/\s+/g, "")), totpStep(when.getTime()));
 
 function step<S extends Extract<LoginStep, { ok: true }>["step"]>(r: LoginStep, s: S): Extract<LoginStep, { step: S }> {
   if (!r.ok) throw new Error(`expected ${s}, got error: ${r.error}`);
@@ -39,16 +37,9 @@ async function resetAll() {
   await resetDb(prisma);
 }
 
-/** Enrol TOTP through the real flow; returns the base32 secret (the user ends signed in once). */
-async function enrol(upn: string, when: Date): Promise<string> {
-  const e = step(await beginPasswordLogin({ upn, password: STRONG }, META, when), "enroll");
-  step(await verifyTotpStep(e.challengeToken, codeFor(e.secret, when), META, when), "done");
-  return e.secret;
-}
-
-async function login(upn: string, secret: string, when: Date): Promise<LoginStep> {
-  const v = step(await beginPasswordLogin({ upn, password: STRONG }, META, when), "verify");
-  return verifyTotpStep(v.challengeToken, codeFor(secret, when), META, when);
+/** Password-only sign-in through the real flow. */
+async function login(upn: string, when: Date, password = STRONG): Promise<LoginStep> {
+  return beginPasswordLogin({ upn, password }, META, when);
 }
 
 async function platformAdmin(upn = "root@platform.test", extra: { createdAt?: Date; lastLoginAt?: Date | null } = {}) {
@@ -82,13 +73,13 @@ describe("password max age", () => {
   it("an expired password forces a change at the next sign-in, then signs in normally", async () => {
     const root = await platformAdmin();
     const u = await prisma.user.create({ data: { upn: "alice@bank-a.test", name: "Alice", role: "ADMIN", tenantId: TENANT_A, passwordHash: await hashPassword(STRONG) } });
-    const secret = await enrol(u.upn, at(0));
+    step(await login(u.upn, at(0)), "done");
 
     await updateSecurityPolicy(root, { passwordMaxAgeDays: 30 });
-    step(await login(u.upn, secret, at(60)), "done"); // fresh password: no change needed
+    step(await login(u.upn, at(60)), "done"); // fresh password: no change needed
 
     await prisma.user.update({ where: { id: u.id }, data: { passwordChangedAt: new Date(NOW.getTime() - 31 * DAY) } });
-    const forced = step(await login(u.upn, secret, at(120)), "change-password");
+    const forced = step(await login(u.upn, at(120)), "change-password");
     expect((await audit("auth.password_expired", TENANT_A)).length).toBe(1);
     step(await changePasswordStep(forced.challengeToken, NEW_PW, META, at(121)), "done");
     const after = await prisma.user.findUniqueOrThrow({ where: { id: u.id } });
@@ -96,8 +87,7 @@ describe("password max age", () => {
     // policy off again → never forced
     await updateSecurityPolicy(root, { passwordMaxAgeDays: 0 });
     await prisma.user.update({ where: { id: u.id }, data: { passwordChangedAt: new Date(NOW.getTime() - 400 * DAY) } });
-    const v = step(await beginPasswordLogin({ upn: u.upn, password: NEW_PW }, META, at(180)), "verify");
-    step(await verifyTotpStep(v.challengeToken, codeFor(secret, at(180)), META, at(180)), "done");
+    step(await login(u.upn, at(180), NEW_PW), "done");
   });
 });
 
@@ -105,12 +95,12 @@ describe("max concurrent sessions", () => {
   it("a new sign-in revokes the oldest sessions beyond the cap (audited)", async () => {
     const root = await platformAdmin();
     const u = await prisma.user.create({ data: { upn: "bob@bank-a.test", name: "Bob", role: "ADMIN", tenantId: TENANT_A, passwordHash: await hashPassword(STRONG) } });
-    const secret = await enrol(u.upn, at(0)); // session #1
+    step(await login(u.upn, at(0)), "done"); // session #1
     await updateSecurityPolicy(root, { maxSessionsPerUser: 2 });
-    step(await login(u.upn, secret, at(60)), "done"); // #2
+    step(await login(u.upn, at(60)), "done"); // #2
     expect(await prisma.session.count({ where: { userId: u.id } })).toBe(2);
     const first = await prisma.session.findFirstOrThrow({ where: { userId: u.id }, orderBy: { createdAt: "asc" } });
-    const third = step(await login(u.upn, secret, at(120)), "done"); // #3 → #1 revoked
+    const third = step(await login(u.upn, at(120)), "done"); // #3 → #1 revoked
     const left = await prisma.session.findMany({ where: { userId: u.id } });
     expect(left).toHaveLength(2);
     expect(left.map((s) => s.id)).not.toContain(first.id);
@@ -119,7 +109,7 @@ describe("max concurrent sessions", () => {
     expect(ev?.payload).toMatchObject({ reason: "session_cap", revoked: 1, maxSessionsPerUser: 2 });
 
     await updateSecurityPolicy(root, { maxSessionsPerUser: 1 });
-    step(await login(u.upn, secret, at(180)), "done");
+    step(await login(u.upn, at(180)), "done");
     expect(await prisma.session.count({ where: { userId: u.id } })).toBe(1);
   });
 });

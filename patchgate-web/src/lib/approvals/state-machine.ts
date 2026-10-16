@@ -7,11 +7,13 @@
  * Banks:
  *  - Every change request belongs to one bank (tenantId). A bank user (actor.tenantId set) can only act
  *    on their own bank's requests; platform staff (actor.tenantId null) may act for any bank.
- *  - `requireBankApproval` (always on — DB CHECK Tenant_requireBankApproval_always): the checker MUST be an
- *    ADMIN of that bank. Our staff can then only be makers for that bank (or the SECOND approver, below).
- *  - Maker ≠ checker always.
+ *  - `requireBankApproval` = the bank's "Approval required" switch (default ON; only an ADMIN can change it,
+ *    audited + notified). ON: the checker MUST be an ADMIN of that bank. Our staff can then only be makers
+ *    for that bank (or the SECOND approver, below). OFF: no second person — an ADMIN's submit moves the
+ *    request straight to APPROVED (auto-approved, audited as change_request.approval_skipped).
+ *  - Maker ≠ checker always (whenever a checker is involved).
  *
- * Multi-approver requests (emergency changes, or more targets than the bank's limit): `requiredApprovals`
+ * Multi-approver requests (approval ON only — emergency changes, or more targets than the bank's limit): `requiredApprovals`
  * = 2 DISTINCT admins, neither the maker. At least one of them must be an admin of the bank (the other may
  * be a second bank admin or a platform admin). An emergency may bypass the maintenance window only if BOTH
  * approvers explicitly confirmed "deploy now" (windowBypassGranted).
@@ -55,7 +57,7 @@ export interface CrSnapshot {
   patchCount: number;
   /** Owning bank */
   tenantId: string;
-  /** Bank policy: the checker must belong to the bank */
+  /** Bank policy "Approval required": ON = a bank admin (never the maker) must approve; OFF = submit auto-approves */
   requireBankApproval: boolean;
   /** Emergency change (needs a reason and two distinct approvers) */
   emergency?: boolean;
@@ -105,6 +107,17 @@ export function windowBypassGranted(emergency: boolean, approvals: readonly Prio
   return emergency && approvals.length >= EMERGENCY_APPROVALS && approvals.every((a) => a.deployNow);
 }
 
+/**
+ * Approval OFF for the bank: a submitted request needs no second person and is approved on submit
+ * (recorded as auto-approved). Emergency / two-approver rules apply only while approval is ON.
+ */
+export function approvalSkipped(cr: Pick<CrSnapshot, "requireBankApproval">): boolean {
+  return !cr.requireBankApproval;
+}
+
+/** Human-readable policy reason recorded with an auto-approval (audit payload, UI). */
+export const APPROVAL_OFF_REASON = "Approval is OFF for this bank (bank policy: approval not required) — no second person needed";
+
 function decideApprove(cr: CrSnapshot, actor: Actor, opts: TransitionOptions): TransitionResult {
   const prior = cr.approvals ?? [];
   const required = requiredApprovalsOf(cr);
@@ -144,7 +157,7 @@ export function transition(cr: CrSnapshot, action: CrAction, actor: Actor, opts:
       if (!canMake(actor)) return fail("Role cannot submit change requests");
       if (cr.patchCount === 0) return fail("Add at least one patch before submitting");
       if (cr.emergency && !cr.emergencyReason?.trim()) return fail("An emergency change needs a reason");
-      return { ok: true, next: "PENDING_APPROVAL" };
+      return { ok: true, next: approvalSkipped(cr) ? "APPROVED" : "PENDING_APPROVAL" };
 
     case "approve":
     case "reject":

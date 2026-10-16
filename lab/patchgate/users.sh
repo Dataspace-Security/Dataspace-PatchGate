@@ -6,9 +6,8 @@
 # Two roles everywhere (patchgate-web/src/lib/auth/roles.ts). Existing accounts keep their UPN; their roles were
 # mapped by migration 20261016140100_role_scope (lab-operator@patchgate.lab became an AUDITOR and is not used).
 # Bank users are created only once the bank exists (lab/connector/enroll.sh creates it, then re-runs this).
-# Passwords are random and stored in lab/patchgate/lab-users.json (gitignored, mode 0600). With AUTH_MFA=off (lab
-# default, env.sh) sign-in is password only; with AUTH_MFA=required TOTP is enrolled at first sign-in (pg-api.mjs
-# records the secret there as well). Safe to re-run: also re-syncs the recorded roles with the database.
+# Passwords are random and stored in lab/patchgate/lab-users.json (gitignored, mode 0600): { password, role, tenant }.
+# Sign-in is password only. Safe to re-run: also re-syncs the recorded roles with the database.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/env.sh"

@@ -67,6 +67,10 @@ describe("approval policy", () => {
     expect(bankPolicySchema.safeParse({}).success).toBe(false);
     expect(bankPolicySchema.safeParse({ approvalExpiryDays: 400 }).success).toBe(false);
     expect(bankPolicySchema.safeParse({ timezone: "Nowhere/City" }).success).toBe(false);
+    // "Approval required" can be switched both ways (who may switch is checked by the service: ADMIN only).
+    expect(bankPolicySchema.safeParse({ requireBankApproval: false }).success).toBe(true);
+    expect(bankPolicySchema.safeParse({ requireBankApproval: true }).success).toBe(true);
+    expect(bankPolicySchema.safeParse({ requireBankApproval: "no" }).success).toBe(false);
   });
 });
 

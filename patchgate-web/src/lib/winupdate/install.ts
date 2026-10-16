@@ -25,8 +25,11 @@ export type Readiness = { state: "ready"; files: WinUpdateFile[] } | { state: "w
 export function updateReadiness(files: readonly WinUpdateFile[], now: Date): Readiness {
   if (files.length === 0) return { state: "undeliverable", reason: "no installable (.msu/.cab) files reported" };
   if (files.some((f) => f.verification === "REJECTED")) return { state: "undeliverable", reason: "a file of this update was rejected" };
-  if (files.some((f) => f.verification !== "VERIFIED")) return { state: "wait", reason: "files not yet downloaded/verified" };
-  if (files.some((f) => !f.availableAt || f.availableAt > now)) return { state: "wait", reason: "files still in quarantine" };
+  if (files.some((f) => f.verification !== "VERIFIED")) return { state: "wait", reason: "Microsoft files still downloading / being verified" };
+  if (files.some((f) => !f.availableAt || f.availableAt > now)) {
+    const until = files.reduce<Date | null>((max, f) => (f.availableAt && (!max || f.availableAt > max) ? f.availableAt : max), null);
+    return { state: "wait", reason: until ? `files in quarantine until ${until.toISOString().replace("T", " ").slice(0, 16)} UTC` : "files still in quarantine" };
+  }
   if (files.length > MAX_FILES_PER_UPDATE) return { state: "undeliverable", reason: "too many files" };
   return { state: "ready", files: [...files].sort((a, b) => a.ordinal - b.ordinal || a.createdAt.getTime() - b.createdAt.getTime()) };
 }

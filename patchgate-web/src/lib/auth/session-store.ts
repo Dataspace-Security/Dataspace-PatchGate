@@ -66,7 +66,7 @@ async function enforceSessionCap(tx: Tx, userId: string, newSessionId: string, n
   );
 }
 
-/** Kill every session and pending sign-in of a user (deactivation, password / MFA reset). */
+/** Kill every session and pending sign-in of a user (deactivation, password reset). */
 export async function revokeUserSessions(tx: Tx, userId: string): Promise<number> {
   const r = await tx.session.deleteMany({ where: { userId } });
   await tx.authChallenge.deleteMany({ where: { userId } });

@@ -17,7 +17,7 @@
 #                                        + meshcentral-offline/Dockerfile (built on site in --online mode)
 #       connector/write-config.mjs       connector.json generator (runs inside the connector image)
 #       endpoint/*.ps1                   the 3 PatchGate PowerShell scripts registered in Tactical
-#       pc/Install-PatchGateAgent.ps1    bank PC installer (step 3)
+#       pc/Install-PatchGateAgent.ps1    bank PC installer (step 3) (+ Install-PatchGateAgent.cmd double-click wrapper)
 #       agent/                           Tactical agent installers + AGENT-SHA256SUMS + SOURCE.txt
 #   patchgate-site-<ver>-online.tar.gz   same without images.tar and docker/ (for `install-site.sh --online`:
 #                                        public images are pulled by digest, Docker from the official apt repo)
@@ -180,12 +180,12 @@ fi
 step "Files"
 cp "$HERE/install-site.sh" "$STAGE/install-site.sh"
 cp "$TACTICAL_COMPOSE" "$STAGE/tactical/docker-compose.yml"
-cp "$HERE/tactical/docker-compose.site.yml" "$HERE/tactical/provision-site.py" "$STAGE/tactical/"
+cp "$HERE/tactical/docker-compose.site.yml" "$HERE/tactical/provision-site.py" "$HERE/tactical/break-glass.py" "$STAGE/tactical/"
 cp "$HERE/connector/write-config.mjs" "$STAGE/connector/"
 for s in Install-PatchGatePackage.ps1 Invoke-PatchGateWuScan.ps1 Install-PatchGateWinUpdate.ps1; do
   cp "$REPO/patchgate-web/scripts/endpoint/$s" "$STAGE/endpoint/$s"
 done
-cp "$REPO/installers/pc/Install-PatchGateAgent.ps1" "$STAGE/pc/"
+cp "$REPO/installers/pc/Install-PatchGateAgent.ps1" "$REPO/installers/pc/Install-PatchGateAgent.cmd" "$STAGE/pc/"
 # LF for everything the Linux side executes.
 find "$STAGE" -maxdepth 2 -type f \( -name '*.sh' -o -name '*.yml' -o -name '*.py' -o -name '*.mjs' \) -exec sed -i 's/\r$//' {} +
 chmod 0755 "$STAGE/install-site.sh"

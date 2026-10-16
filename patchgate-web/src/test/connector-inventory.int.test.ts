@@ -78,6 +78,35 @@ describe("SYNC_AGENTS", () => {
     await roundTrip(dr, "SYNC_AGENTS", {} as never, { agents: [agent("agentAAAA0009", "PC9")] });
     expect((await prisma.endpoint.findFirstOrThrow({ where: { tacticalAgentId: "agentAAAA0002" } })).connectorId).toBeNull();
   });
+
+  it("stores Tactical last_seen / boot_time in UTC and never a future boot time (PC clock ahead)", async () => {
+    const hq = await connector(TENANT_A, "HQ");
+    const now = Date.now();
+    const lastSeen = new Date(now - 3 * 86_400_000);
+    const booted = new Date(now - 5 * 3_600_000);
+    await roundTrip(hq, "SYNC_AGENTS", {} as never, {
+      agents: [
+        // offline for 3 days: last seen must stay 3 days ago, not "now"
+        { ...agent("agentTIME0001", "PC-OLD"), online: false, lastSeen: lastSeen.toISOString().replace("Z", "+00:00"), bootTime: booted.getTime() / 1000 },
+        // the PC's clock is ~4 h ahead (Tactical shows "Boot Time: -14543 seconds ago")
+        { ...agent("agentTIME0002", "PC-SKEW"), lastSeen: new Date(now - 30_000).toISOString(), bootTime: now / 1000 + 14_543 },
+        // older connector: no times at all
+        agent("agentTIME0003", "PC-LEGACY"),
+      ],
+    });
+    const rows = await prisma.endpoint.findMany({ where: { tenantId: TENANT_A }, orderBy: { tacticalAgentId: "asc" } });
+    expect(rows[0]!.lastSeenAt?.toISOString()).toBe(lastSeen.toISOString());
+    expect(rows[0]!.bootedAt?.toISOString()).toBe(booted.toISOString());
+    expect(rows[1]!.bootedAt).toBeNull();
+    expect(Math.abs(rows[1]!.lastSeenAt!.getTime() - (now - 30_000))).toBeLessThan(1000);
+    expect(rows[2]!.lastSeenAt).not.toBeNull();
+    expect(rows[2]!.bootedAt).toBeNull();
+
+    // A later sync (update path): an offline agent without last_seen keeps its previous last-seen time.
+    await roundTrip(hq, "SYNC_AGENTS", {} as never, { agents: [{ ...agent("agentTIME0001", "PC-OLD"), online: false }, agent("agentTIME0002", "PC-SKEW"), agent("agentTIME0003", "PC-LEGACY")] });
+    const again = await prisma.endpoint.findFirstOrThrow({ where: { tacticalAgentId: "agentTIME0001" } });
+    expect(again.lastSeenAt?.toISOString()).toBe(lastSeen.toISOString());
+  });
 });
 
 describe("SCAN + COLLECT", () => {

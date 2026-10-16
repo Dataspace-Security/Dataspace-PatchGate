@@ -30,6 +30,10 @@ export interface MessageFacts {
   connectorName?: string;
   lastSeenAt?: Date | null;
   offlineMinutes?: number;
+  /** Windows Update lock */
+  endpointCount?: number;
+  hostnames?: string;
+  issues?: string | null;
   /** Package trust */
   appName?: string;
   wingetId?: string;
@@ -151,6 +155,14 @@ function layout(event: NotificationEvent, f: MessageFacts): Layout {
         fields: [["Bank", f.bankName], ["Connector", f.connectorName], ["Offline for", f.offlineMinutes !== undefined ? `${f.offlineMinutes} min` : null]],
         path: "/connectors",
       };
+    case "WU_LOCK_BROKEN":
+      return {
+        subject: `Windows Update NOT locked on ${f.endpointCount ?? "?"} PC${f.endpointCount === 1 ? "" : "s"}${bank(f)}`,
+        intro:
+          "These PCs could take Windows updates directly from Microsoft, outside PatchGate. Re-run Install-PatchGateAgent.ps1 on them (or fix the GPO); see RUNBOOK \"PatchGate locks Windows Update\".",
+        fields: [["Bank", f.bankName], ["Connector", f.connectorName], ["PCs", f.hostnames], ["Problems", f.issues]],
+        path: "/endpoints",
+      };
     case "PACKAGE_HELD":
       return {
         subject: `Package held for trust decision: ${f.appName ?? f.wingetId ?? ""} ${f.version ?? ""}`,
@@ -172,6 +184,24 @@ function layout(event: NotificationEvent, f: MessageFacts): Layout {
         fields: [["Chain", f.chain], ["Bank", f.bankName], ["Events not exported", f.pending], ["Last export", f.minutesSinceExport === null || f.minutesSinceExport === undefined ? "never" : `${f.minutesSinceExport} min ago`]],
         path: "/audit",
       };
+    case "TACTICAL_OUT_OF_BAND":
+      return {
+        subject: `CRITICAL: ${f.total ?? 1} action(s) in Tactical outside PatchGate: ${f.connectorName ?? ""}${bank(f)}`,
+        intro:
+          "Someone used the site's Tactical RMM directly (dashboard login, script, command, approval or setting change) instead of PatchGate. Check who did it and why; acknowledge it on the Connectors page (RUNBOOK \"Tactical is sealed\").",
+        fields: [["Bank", f.bankName], ["Site connector", f.connectorName], ["Actions", f.total], ["Latest", f.problem]],
+        path: "/connectors",
+      };
+    case "APPROVAL_SETTING_CHANGED":
+      return {
+        subject: `Approval switched ${f.status === "ON" ? "ON" : "OFF"}${bank(f)}`,
+        intro:
+          f.status === "ON"
+            ? "Approval is required again: every change request needs an admin of the bank other than the maker before it can be deployed."
+            : "Approval is OFF: change requests of this bank are approved on submit and can be deployed WITHOUT a second person. If this was not intended, switch it back on (Settings → Approval policy).",
+        fields: [["Bank", f.bankName], ["Approval required", f.status === "ON" ? "yes" : "no"], ["Changed by", f.actor]],
+        path: "/settings/approvals",
+      };
     case "ACCOUNT_LOCKED":
       return {
         subject: "Your PatchGate account was locked",
@@ -183,13 +213,6 @@ function layout(event: NotificationEvent, f: MessageFacts): Layout {
       return {
         subject: "Your PatchGate password was reset",
         intro: "An administrator reset your password. Your administrator gives you the temporary password; you must change it at the next sign-in. If you did not expect this, contact your administrator.",
-        fields: [["Account", f.userName], ["Reset by", f.actor]],
-        path: "/login",
-      };
-    case "MFA_RESET":
-      return {
-        subject: "Your PatchGate authenticator was reset",
-        intro: "An administrator reset your authenticator; you will set up a new one at the next sign-in. If you did not expect this, contact your administrator.",
         fields: [["Account", f.userName], ["Reset by", f.actor]],
         path: "/login",
       };

@@ -31,6 +31,13 @@ export function ApprovalPolicyForm({ initial }: { initial: Policy }) {
       setBusy(false);
       return setMsg({ tone: "good", text: "Nothing to change." });
     }
+    if (
+      changed.requireBankApproval === false &&
+      !window.confirm("Switch approval OFF? Change requests of this bank will be approved on submit and can be deployed WITHOUT a second person. This is recorded in the audit log and every admin is notified.")
+    ) {
+      setBusy(false);
+      return;
+    }
     const r = await send("/api/settings/approvals", "PATCH", changed);
     setBusy(false);
     if (!r.ok) return setMsg({ tone: "bad", text: r.error });
@@ -41,12 +48,27 @@ export function ApprovalPolicyForm({ initial }: { initial: Policy }) {
   return (
     <Card>
       <form onSubmit={save} className="grid gap-5 md:grid-cols-2">
-        <div className="text-sm text-fg md:col-span-2">
-          <span className="font-medium">Bank approval: always required</span>
-          <span className="block text-xs text-muted">
-            Every change request needs at least one approver or admin of this bank (never the maker). This is a platform rule and cannot be turned off.
+        <label className="flex items-start gap-3 text-sm text-fg md:col-span-2">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4"
+            checked={p.requireBankApproval}
+            onChange={(e) => setP({ ...p, requireBankApproval: e.target.checked })}
+            data-testid="approval-required"
+          />
+          <span>
+            <span className="font-medium">Approval required</span>
+            <span className="block text-xs text-muted">
+              ON (recommended): every change request needs an admin of this bank other than the maker; emergency and large requests need two.
+              OFF: an admin&apos;s request is approved on submit and can be deployed without a second person (recorded as auto-approved). Switching is audited and every admin is notified.
+            </span>
           </span>
-        </div>
+        </label>
+        {!p.requireBankApproval && (
+          <div className="md:col-span-2">
+            <Alert tone="warn">Approval is OFF for this bank — requests deploy without a second person.</Alert>
+          </div>
+        )}
         <label className={labelCls}>
           Approval expiry (days)
           <input className={inputCls} type="number" min={0} max={365} required value={p.approvalExpiryDays} onChange={(e) => setP({ ...p, approvalExpiryDays: Number(e.target.value) })} />

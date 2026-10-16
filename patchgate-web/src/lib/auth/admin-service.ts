@@ -16,7 +16,7 @@ import { AuthError, type SessionUser } from "./session";
 /**
  * User and bank administration.
  * - Accounts are created and managed ONLY by a platform admin (role ADMIN, tenantId null = our team):
- *   create, edit name / role / active, reset password or MFA, unlock - for our team and every bank.
+ *   create, edit name / role / active, reset password, unlock - for our team and every bank.
  *   A user's bank is fixed at creation.
  * - Nobody from a bank (bank ADMIN or AUDITOR) changes any account; they only READ their own bank's users.
  *   (A bank admin who could create a second admin and learn its temporary password could approve their own
@@ -82,7 +82,7 @@ export const updateUserSchema = z
   .object({ name: nameSchema.optional(), role: roleSchema.optional(), active: z.boolean().optional() })
   .refine((v) => v.name !== undefined || v.role !== undefined || v.active !== undefined, "nothing to change");
 
-export const userActionSchema = z.object({ action: z.enum(["reset-password", "reset-mfa", "unlock"]) });
+export const userActionSchema = z.object({ action: z.enum(["reset-password", "unlock"]) });
 
 const slugSchema = z
   .string()
@@ -94,7 +94,8 @@ export const createTenantSchema = z.object({
   slug: slugSchema,
   name: z.string().trim().min(2).max(120),
   active: z.boolean().default(true),
-  requireBankApproval: z.literal(true, { error: "a bank approver is always required" }).default(true),
+  // New banks always start with approval ON; a bank / platform admin can switch it in Settings → Approval policy.
+  requireBankApproval: z.literal(true, { error: "a new bank starts with approval ON (switch it in Settings → Approval policy)" }).default(true),
 });
 
 export const updateTenantSchema = z
@@ -102,7 +103,7 @@ export const updateTenantSchema = z
     slug: slugSchema.optional(),
     name: z.string().trim().min(2).max(120).optional(),
     active: z.boolean().optional(),
-    requireBankApproval: z.literal(true, { error: "a bank approver is always required" }).optional(),
+    requireBankApproval: z.literal(true, { error: "switch approval in Settings → Approval policy (audited + notified)" }).optional(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), "nothing to change");
 
@@ -116,7 +117,6 @@ export interface AdminUserView {
   tenantId: string | null;
   tenantName: string | null;
   active: boolean;
-  totpEnabled: boolean;
   mustChangePassword: boolean;
   hasPassword: boolean;
   lockedUntil: Date | null;
@@ -131,7 +131,6 @@ const userSelect = {
   role: true,
   tenantId: true,
   active: true,
-  totpEnabled: true,
   mustChangePassword: true,
   passwordHash: true,
   lockedUntil: true,
@@ -151,7 +150,6 @@ function toView(u: UserRow): AdminUserView {
     tenantId: u.tenantId,
     tenantName: u.tenant?.name ?? null,
     active: u.active,
-    totpEnabled: u.totpEnabled,
     mustChangePassword: u.mustChangePassword,
     hasPassword: u.passwordHash !== null,
     lockedUntil: u.lockedUntil,
@@ -272,7 +270,7 @@ export async function updateUser(actor: SessionUser, userId: string, input: z.in
 
 export type UserAction = z.infer<typeof userActionSchema>["action"];
 
-/** Reset password (new one-time temporary password), reset MFA (re-enrol at next sign-in) or unlock. */
+/** Reset password (new one-time temporary password) or unlock. */
 export async function userAction(actor: SessionUser, userId: string, action: UserAction): Promise<{ user: AdminUserView; temporaryPassword: string | null }> {
   requireAccountManager(actor);
   const temporaryPassword = action === "reset-password" ? generateTempPassword() : null;
@@ -283,12 +281,10 @@ export async function userAction(actor: SessionUser, userId: string, action: Use
     const data: Prisma.UserUpdateInput =
       action === "reset-password"
         ? { passwordHash, passwordChangedAt: new Date(), mustChangePassword: true, failedLogins: 0, lockedUntil: null }
-        : action === "reset-mfa"
-          ? { totpSecretEnc: null, totpEnabled: false, totpLastStep: null }
-          : { failedLogins: 0, lockedUntil: null };
+        : { failedLogins: 0, lockedUntil: null };
     const after = await tx.user.update({ where: { id: userId }, data, select: userSelect });
     const killed = action === "unlock" ? 0 : await revokeUserSessions(tx, userId);
-    const auditAction = { "reset-password": "user.password_reset", "reset-mfa": "user.mfa_reset", unlock: "user.unlocked" }[action];
+    const auditAction = { "reset-password": "user.password_reset", unlock: "user.unlocked" }[action];
     // Always the user's own chain (the bank's chain for bank users); the next sign-in is flagged afterReset.
     await auditAuth(
       {
@@ -301,7 +297,7 @@ export async function userAction(actor: SessionUser, userId: string, action: Use
       },
       tx,
     );
-    if (action !== "unlock") await enqueueNotification(tx, { event: action === "reset-password" ? "PASSWORD_RESET" : "MFA_RESET", userId, actor: actor.upn });
+    if (action !== "unlock") await enqueueNotification(tx, { event: "PASSWORD_RESET", userId, actor: actor.upn });
     return { user: toView(after), temporaryPassword };
   });
 }
