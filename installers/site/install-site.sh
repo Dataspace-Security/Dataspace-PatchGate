@@ -474,7 +474,9 @@ UNIT
     for _ in $(seq 1 10); do docker info >/dev/null 2>&1 && break; sleep 2; done
     if ! docker info >/dev/null 2>&1 && [ ! -d /run/systemd/system ] && ! pgrep -x dockerd >/dev/null 2>&1; then
       info "no systemd: starting dockerd in the background (log /var/log/dockerd.log)"
-      nohup dockerd >/var/log/dockerd.log 2>&1 &
+      # </dev/null 3>&-: the daemon must not inherit our stdin (curl | bash) or fd 3 (terminal), otherwise
+      # whoever reads our output (| tee, docker exec) never sees EOF and waits forever.
+      nohup dockerd >/var/log/dockerd.log 2>&1 </dev/null 3>&- &
     fi
     for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
   fi

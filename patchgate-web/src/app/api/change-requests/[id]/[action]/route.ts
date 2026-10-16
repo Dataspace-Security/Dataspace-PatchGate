@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getCurrentUser, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { fail, handle, ok } from "@/lib/api/response";
 import { applyAction, decisionSchema } from "@/lib/approvals/service";
 import { startDeployment } from "@/lib/deploy/start";
@@ -20,6 +20,7 @@ export async function POST(
     // Role, maker-checker and the bank's approval policy are enforced by the state machine inside each
     // service; the request is looked up in the active bank only (another bank's id is a 404).
     const user = await getCurrentUser();
+    requireWriter(user);
     const tenantId = await requireTenant(user);
 
     if (action.data === "deploy") return ok(await startDeployment(user, tenantId, id));

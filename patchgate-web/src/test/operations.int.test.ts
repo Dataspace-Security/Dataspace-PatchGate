@@ -44,7 +44,7 @@ const HOUR = 3_600_000;
 const ago = (ms: number) => new Date(Date.now() - ms);
 const EXTRA_BANKS = 28; // 30 banks in total → 2 pages
 
-const platformViewer = asSessionUser({ id: "u-pv", role: "VIEWER", upn: "viewer@patchgate.test", name: "Platform Viewer", tenantId: null });
+const platformViewer = asSessionUser({ id: "u-pv", role: "AUDITOR", upn: "viewer@patchgate.test", name: "Platform Viewer", tenantId: null });
 const bankAdmin = asSessionUser({ id: "u-ba", role: "ADMIN", upn: "admin@bank-a.test", name: "Bank Admin", tenantId: TENANT_A });
 
 beforeAll(async () => {

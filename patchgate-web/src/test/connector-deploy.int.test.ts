@@ -58,8 +58,8 @@ async function sevenZip() {
 
 /** Approved + started change request for `n` PCs on connector `c` (window: every hour for 2 h → always open). */
 async function deploying(c: Conn, n: number, patchIds: string[]) {
-  const maker = sessionUserOf(await prisma.user.create({ data: { upn: `op${Math.random()}@pg`, name: "Op", role: "OPERATOR" } }));
-  const checker = sessionUserOf(await prisma.user.create({ data: { upn: `ap${Math.random()}@a`, name: "Ap", role: "APPROVER", tenantId: TENANT_A } }));
+  const maker = sessionUserOf(await prisma.user.create({ data: { upn: `op${Math.random()}@pg`, name: "Op", role: "ADMIN" } }));
+  const checker = sessionUserOf(await prisma.user.create({ data: { upn: `ap${Math.random()}@a`, name: "Ap", role: "ADMIN", tenantId: TENANT_A } }));
   const ring = await prisma.ring.create({ data: { tenantId: TENANT_A, name: "R0", wsusGroup: "R0", order: 0 } });
   const window = await prisma.maintenanceWindow.create({ data: { tenantId: TENANT_A, ringId: ring.id, name: "Hourly", cron: "0 * * * *", durationMin: 120, timezone: "UTC" } });
   await prisma.endpoint.createMany({

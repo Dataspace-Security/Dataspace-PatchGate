@@ -6,6 +6,7 @@ import QRCode from "qrcode";
 import type { AuthChallenge, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { describeError } from "@/lib/errors-describe";
+import { mfaRequired } from "@/lib/env";
 import { auditAuth } from "./audit";
 import { credentialResetSinceLastLogin, type CredentialReset } from "./reset-flag";
 import { recordUnknownUserFailure } from "./unknown-login-summary";
@@ -22,7 +23,8 @@ import { base32Encode, generateTotpSecret, groupSecret, otpauthUri, verifyTotp }
 
 /**
  * Local sign-in (AUTH_MODE=local): password → TOTP (enrol on first use) → optional forced password
- * change → server-side session. Each step is bound to a short-lived, single-use AuthChallenge whose
+ * change → server-side session. With AUTH_MFA=off the TOTP step is skipped (password only); stored TOTP
+ * secrets stay untouched so AUTH_MFA=required works again at once (users without one enrol then). Each step is bound to a short-lived, single-use AuthChallenge whose
  * token lives only in an HttpOnly cookie. Messages are deliberately generic; reasons go to the audit log.
  */
 
@@ -135,6 +137,7 @@ export async function beginPasswordLogin(input: z.infer<typeof passwordLoginSche
   }
 
   const returnTo = safeReturnTo(input.returnTo);
+  if (!mfaRequired()) return finishWithoutTotp(user, returnTo, meta, now);
   if (user.totpEnabled && user.totpSecretEnc) {
     const challengeToken = await authTx((tx) => newChallenge(tx, user.id, "VERIFY", returnTo, now));
     return { ok: true, step: "verify", challengeToken };
@@ -157,9 +160,36 @@ export async function beginPasswordLogin(input: z.infer<typeof passwordLoginSche
   };
 }
 
+/** Method recorded on auth.login: the second factor is part of it only while AUTH_MFA=required. */
+function loginMethod(): string {
+  return mfaRequired() ? "password+totp" : "password";
+}
+
+type LoginUser = NonNullable<Awaited<ReturnType<typeof loadUser>>>;
+
+/**
+ * AUTH_MFA=off: the password was correct → session, or the forced password change first (temporary
+ * password from an administrator, or a password older than the platform maximum age).
+ */
+async function finishWithoutTotp(user: LoginUser, returnTo: string, meta: ClientMeta, now: Date): Promise<LoginStep> {
+  const reset = user.mustChangePassword ? null : await credentialResetSinceLastLogin(user);
+  const expired = !user.mustChangePassword && passwordExpired(user, await getSecurityPolicy(), now);
+  return authTx(async (tx): Promise<LoginStep> => {
+    if (user.mustChangePassword || expired) {
+      if (expired) {
+        await auditAuth({ actor: user.upn, action: "auth.password_expired", entity: "User", entityId: user.id, payload: { passwordChangedAt: (user.passwordChangedAt ?? user.createdAt).toISOString(), ip: meta.ip }, tenantId: user.tenantId }, tx);
+      }
+      const challengeToken = await newChallenge(tx, user.id, "PASSWORD", returnTo, now);
+      return { ok: true, step: "change-password", challengeToken };
+    }
+    const sessionToken = await completeLogin(tx, user, loginMethod(), meta, now, reset);
+    return { ok: true, step: "done", sessionToken, returnTo };
+  });
+}
+
 interface LoadedChallenge {
   ch: AuthChallenge;
-  user: NonNullable<Awaited<ReturnType<typeof loadUser>>>;
+  user: LoginUser;
 }
 
 function loadUser(id: string) {
@@ -283,7 +313,7 @@ export async function changePasswordStep(token: string | undefined, newPassword:
       await tx.user.update({ where: { id: user.id }, data: { passwordHash, passwordChangedAt: now, mustChangePassword: false } });
       await tx.session.deleteMany({ where: { userId: user.id } }); // any older session dies with the old password
       await auditAuth({ actor: user.upn, action: "auth.password_changed", entity: "User", entityId: user.id, payload: { forced: true, ip: meta.ip }, tenantId: user.tenantId }, tx);
-      const sessionToken = await completeLogin(tx, user, "password+totp", meta, now, reset);
+      const sessionToken = await completeLogin(tx, user, loginMethod(), meta, now, reset);
       return { ok: true, step: "done", sessionToken, returnTo: safeReturnTo(ch.returnTo) };
     });
   } catch (err: unknown) {

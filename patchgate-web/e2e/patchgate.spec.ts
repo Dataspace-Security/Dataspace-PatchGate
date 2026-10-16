@@ -108,10 +108,10 @@ test("checker approves and queues deployment; audit trail shows both people", as
   await shoot(page, "05-cr-deploying");
 });
 
-test("viewer cannot create change requests", async ({ page }) => {
+test("auditor (read-only) cannot create change requests", async ({ page }) => {
   await actAs(page, "viewer@dev.local");
   await page.goto("/patches");
-  await expect(page.getByText("Your role cannot create change requests.")).toBeVisible();
+  await expect(page.getByText("Read-only (auditor): only admins create change requests.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Create draft" })).toBeDisabled();
 });
 

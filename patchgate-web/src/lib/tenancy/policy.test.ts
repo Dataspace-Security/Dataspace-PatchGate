@@ -11,7 +11,7 @@ import {
   type TenantUser,
 } from "./policy";
 
-const platformOperator: TenantUser = { role: "OPERATOR", tenantId: null };
+const platformOperator: TenantUser = { role: "AUDITOR", tenantId: null }; // platform auditor (read-only staff)
 const platformAdmin: TenantUser = { role: "ADMIN", tenantId: null };
 const bankAdmin: TenantUser = { role: "ADMIN", tenantId: "bank-a" };
 

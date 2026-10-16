@@ -1,12 +1,12 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { UserRole } from "@prisma/client";
+import { ACTIVE_ROLES } from "@/lib/auth/roles";
 import { prisma } from "@/lib/db";
 import { auditAuth } from "@/lib/auth/audit";
 import { checkPasswordPolicy, generateTempPassword, hashPassword } from "@/lib/auth/password";
 
-const USAGE = `Usage: npx tsx --env-file=.env scripts/admin/create-user.ts --upn <name@domain> --name "<Full Name>" [--role ADMIN|APPROVER|OPERATOR|VIEWER] [--tenant <bank-slug>] [--generate]
-  --role      defaults to ADMIN
+const USAGE = `Usage: npx tsx --env-file=.env scripts/admin/create-user.ts --upn <name@domain> --name "<Full Name>" [--role ADMIN|AUDITOR] [--tenant <bank-slug>] [--generate]
+  --role      ADMIN (manages its scope; a bank admin also approves) or AUDITOR (read-only); defaults to ADMIN
   --tenant    bank short code; omit for PatchGate platform staff (all banks)
   --generate  print a one-time temporary password (must be changed at first sign-in) instead of prompting
 `;
@@ -20,7 +20,7 @@ const argsSchema = z.object({
     .max(200)
     .regex(/^[^\s@]+@[^\s@]+$/, "use name@domain"),
   name: z.string().trim().min(1).max(120),
-  role: z.enum(UserRole).default("ADMIN"),
+  role: z.enum(ACTIVE_ROLES, { error: "role must be ADMIN or AUDITOR" }).default("ADMIN"),
   tenant: z.string().trim().toLowerCase().min(1).max(40).optional(),
   generate: z.boolean().default(false),
 });

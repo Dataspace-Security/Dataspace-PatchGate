@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { canWrite } from "@/lib/auth/roles";
 import { RefreshCw, ScanSearch } from "lucide-react";
 import { directTacticalConfig, legacyTacticalTenantId } from "@/lib/tactical/from-env";
 import { withTenant } from "@/lib/tenancy";
@@ -10,7 +11,7 @@ import { RingSelect } from "./ring-select";
 async function EndpointTable() {
   const { user, tenant } = await getPageTenant();
   const tenantId = tenant.id;
-  const canEdit = user.role !== "VIEWER";
+  const canEdit = canWrite(user); // auditors: read-only
   // Only the bank on the direct Tactical link can sync from it; other banks report through their connector.
   const directTactical = tenantId === legacyTacticalTenantId() && directTacticalConfig() !== null;
 

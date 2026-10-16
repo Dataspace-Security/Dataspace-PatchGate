@@ -1,21 +1,24 @@
 import type { UserRole } from "@prisma/client";
+import type { ActiveRole } from "./roles";
 
 /**
  * Pure SSO helpers: IdP claim → PatchGate role, safe post-login redirects, session lifetime rules.
  * Roles are owned by the bank IdP (AD groups / Entra app roles) and re-read on every login.
  */
 
-const ROLE_RANK: Record<UserRole, number> = { VIEWER: 0, OPERATOR: 1, APPROVER: 2, ADMIN: 3 };
+// Only the two active roles can come from an IdP (the same for OIDC_USER_SCOPE=platform and a bank);
+// the retired VIEWER / OPERATOR / APPROVER are refused at start-up (env.ts validates OIDC_ROLE_MAP).
+const ROLE_RANK: Readonly<Record<ActiveRole, number>> = { AUDITOR: 0, ADMIN: 1 };
 const ROLES = new Set<string>(Object.keys(ROLE_RANK));
 
-/** "PatchGate.Admin=ADMIN; PatchGate.Approver=APPROVER" → Map (IdP value → role). Throws on bad input. */
+/** "PatchGate.Admin=ADMIN; PatchGate.Auditor=AUDITOR" → Map (IdP value → role). Throws on bad input. */
 export function parseRoleMap(spec: string): Map<string, UserRole> {
   const map = new Map<string, UserRole>();
   for (const part of spec.split(/[;\n]/).map((p) => p.trim()).filter(Boolean)) {
     const eq = part.lastIndexOf("=");
     const key = eq > 0 ? part.slice(0, eq).trim() : "";
     const role = eq > 0 ? part.slice(eq + 1).trim().toUpperCase() : "";
-    if (!key || !ROLES.has(role)) throw new Error(`Invalid OIDC_ROLE_MAP entry "${part}"`);
+    if (!key || !ROLES.has(role)) throw new Error(`Invalid OIDC_ROLE_MAP entry "${part}" (roles: ADMIN, AUDITOR)`);
     map.set(key, role as UserRole);
   }
   if (map.size === 0) throw new Error("OIDC_ROLE_MAP is empty");
@@ -40,9 +43,13 @@ export function roleFromClaims(claims: Record<string, unknown>, claimPath: strin
   for (const v of values) {
     if (typeof v !== "string") continue;
     const role = map.get(v);
-    if (role && (best === null || ROLE_RANK[role] > ROLE_RANK[best])) best = role;
+    if (role && (best === null || rank(role) > rank(best))) best = role;
   }
   return best;
+}
+
+function rank(role: UserRole): number {
+  return role in ROLE_RANK ? ROLE_RANK[role as ActiveRole] : -1;
 }
 
 /** First non-empty string claim among the candidates. */

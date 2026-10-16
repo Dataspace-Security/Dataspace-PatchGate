@@ -7,6 +7,7 @@ import { getPageTenant } from "@/lib/tenancy/page";
 import { requiredApprovalsOf, transition, type CrAction } from "@/lib/approvals/state-machine";
 import { REBOOT_LABEL } from "@/lib/policies/reboot-labels";
 import { ActionButton } from "@/components/action-button";
+import { canWrite } from "@/lib/auth/roles";
 import { Alert, Badge, Card, EmptyState, Loading, fmtDate, rowCls, tableCls, theadCls } from "@/components/ui";
 import { EmergencyBadge } from "../emergency-badge";
 import { DraftOptions } from "./draft-options";
@@ -125,7 +126,7 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
         ? [{ ...a, confirm: `Queue deployment to the approved endpoints${targetsText}?` }]
         : [a],
   );
-  const canEditDraft = cr.status === "DRAFT" && cr.createdById === user.id;
+  const canEditDraft = cr.status === "DRAFT" && cr.createdById === user.id && canWrite(user);
   const counts = cr.deployments.reduce<Record<string, number>>((acc, d) => ({ ...acc, [d.status]: (acc[d.status] ?? 0) + 1 }), {});
   const deploying = cr.status === "DEPLOYING";
   const deployed = ["COMPLETED", "PARTIAL", "FAILED"].includes(cr.status);
@@ -154,7 +155,7 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
 
       <Card
         title="Approval"
-        description={`Maker and checker must be different people (enforced server-side).${tenant.requireBankApproval ? ` ${tenant.name} requires the checker to be one of its own approvers.` : ""} The request deploys only to the endpoints in its ring when it was submitted; changing the targets needs a new request and approval.`}
+        description={`Maker and checker must be different people (enforced server-side).${tenant.requireBankApproval ? ` The checker must be an admin of ${tenant.name}.` : ""} The request deploys only to the endpoints in its ring when it was submitted; changing the targets needs a new request and approval.`}
       >
         <ol className="flex flex-col gap-4 sm:flex-row sm:gap-6">
           <Step done title="Created (maker)" who={cr.createdBy.name} when={cr.createdAt} />
@@ -217,9 +218,15 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
       </Card>
 
       {canEditDraft && (
-        <Card title="Draft options" description="Only you (the maker) can change these, and only before submitting.">
-          <DraftOptions crId={cr.id} emergency={cr.emergency} emergencyReason={cr.emergencyReason} rebootPolicy={cr.rebootPolicy ?? cr.window?.rebootPolicy ?? "REQUIRED"} />
-        </Card>
+        <details className="group rounded-xl border border-border bg-surface shadow-card" data-testid="cr-advanced-options">
+          <summary className="cursor-pointer select-none px-5 py-4 text-sm font-semibold text-fg">
+            Advanced options <span className="font-normal text-muted">— reboot policy, emergency change (optional; the defaults suit most requests)</span>
+          </summary>
+          <div className="border-t border-border px-5 py-4">
+            <p className="mb-4 text-xs text-muted">Only you (the maker) can change these, and only before submitting.</p>
+            <DraftOptions crId={cr.id} emergency={cr.emergency} emergencyReason={cr.emergencyReason} rebootPolicy={cr.rebootPolicy ?? cr.window?.rebootPolicy ?? "REQUIRED"} />
+          </div>
+        </details>
       )}
 
       <Card title={`Patches (${cr.patches.length})`} padded={false}>

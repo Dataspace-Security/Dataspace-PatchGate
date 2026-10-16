@@ -37,8 +37,13 @@ have="$(sha256sum "$REL/bundles/$ONL" | cut -d' ' -f1)"
 [ "$want" = "$have" ] || die "$ONL does not match site-SHA256SUMS"
 
 say "assembling $OUT"
+# A rebuild keeps what a test run in this folder wrote (logs, logins, test CA, choices): the kit may be running.
+KEEP="$HERE/out/.keep-$NAME"; rm -rf "$KEEP"; mkdir -p "$KEEP"
+for f in logs logins.txt patchgate-test-ca.pem; do [ -e "$OUT/$f" ] && mv "$OUT/$f" "$KEEP/"; done
 rm -rf "$OUT" "$HERE/out/$NAME.zip"
-mkdir -p "$OUT/images" "$OUT/site-bundle" "$OUT/product" "$OUT/lib" "$OUT/logs"
+mkdir -p "$OUT/images" "$OUT/site-bundle" "$OUT/product" "$OUT/lib"
+for f in logs logins.txt patchgate-test-ca.pem; do [ -e "$KEEP/$f" ] && mv "$KEEP/$f" "$OUT/"; done
+rmdir "$KEEP"; mkdir -p "$OUT/logs"
 cp "$REL"/images/patchgate-*-"$V".tar.gz "$OUT/images/"
 cp "$REL/bundles/$ONL" "$REL/bundles/site-SHA256SUMS" "$OUT/site-bundle/"
 cp "$REL/bundles/site-install-site.sh" "$OUT/site-bundle/install-site.sh"
@@ -63,7 +68,7 @@ chmod 0755 "$OUT/test-on-my-pc.sh" "$OUT"/lib/*.sh
 printf 'Run ./test-on-my-pc.sh from the kit folder; each run writes a log file here.\n' > "$OUT/logs/README.txt"
 
 say "kit SHA256SUMS"
-(cd "$OUT" && find . -type f ! -name SHA256SUMS ! -path './logs/*' | sed 's#^\./##' | LC_ALL=C sort | xargs -d '\n' sha256sum > SHA256SUMS)
+(cd "$OUT" && find . -type f ! -name SHA256SUMS ! -path './logs/*' ! -name logins.txt ! -name patchgate-test-ca.pem ! -name '.logins.*' | sed 's#^\./##' | LC_ALL=C sort | xargs -d '\n' sha256sum > SHA256SUMS)
 (cd "$OUT" && sha256sum --strict -c --quiet SHA256SUMS) || die "kit checksum self-check failed"
 echo "  $(wc -l < "$OUT/SHA256SUMS") files"
 

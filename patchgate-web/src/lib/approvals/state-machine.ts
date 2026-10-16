@@ -2,18 +2,23 @@
  * Change-request lifecycle with maker-checker enforcement (ARCHITECTURE §5.3, ARCHITECTURE-HOSTED §5).
  * Pure: no I/O, so every rule is unit-testable.
  *
+ * Roles (lib/auth/roles.ts): ADMIN makes (raises, submits, deploys) and checks; AUDITOR does nothing.
+ *
  * Banks:
  *  - Every change request belongs to one bank (tenantId). A bank user (actor.tenantId set) can only act
  *    on their own bank's requests; platform staff (actor.tenantId null) may act for any bank.
- *  - Per-bank policy `requireBankApproval` (default on): the checker MUST be a user of that bank
- *    (APPROVER/ADMIN). Our staff can then only be makers for that bank.
+ *  - `requireBankApproval` (always on — DB CHECK Tenant_requireBankApproval_always): the checker MUST be an
+ *    ADMIN of that bank. Our staff can then only be makers for that bank (or the SECOND approver, below).
  *  - Maker ≠ checker always.
  *
  * Multi-approver requests (emergency changes, or more targets than the bank's limit): `requiredApprovals`
- * = 2 DISTINCT approvers, neither the maker. With bank approval required, at least one of them must be a
- * user of the bank (the other may be platform staff). An emergency may bypass the maintenance window only
- * if BOTH approvers explicitly confirmed "deploy now" (windowBypassGranted).
+ * = 2 DISTINCT admins, neither the maker. At least one of them must be an admin of the bank (the other may
+ * be a second bank admin or a platform admin). An emergency may bypass the maintenance window only if BOTH
+ * approvers explicitly confirmed "deploy now" (windowBypassGranted).
  */
+import { canMake, canWrite, type Role } from "@/lib/auth/roles";
+
+export type { Role } from "@/lib/auth/roles";
 
 export type CrStatus =
   | "DRAFT"
@@ -25,8 +30,6 @@ export type CrStatus =
   | "PARTIAL"
   | "FAILED"
   | "CANCELLED";
-
-export type Role = "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN";
 
 export type CrAction = "submit" | "approve" | "reject" | "deploy" | "cancel";
 
@@ -82,8 +85,8 @@ const TERMINAL: ReadonlySet<CrStatus> = new Set([
   "CANCELLED",
 ]);
 
-const CAN_APPROVE: ReadonlySet<Role> = new Set(["APPROVER", "ADMIN"]);
-const CAN_MAKE: ReadonlySet<Role> = new Set(["OPERATOR", "APPROVER", "ADMIN"]);
+/** Checkers are admins (whether bank or platform is decided per request in decideApprove / reject). */
+const canDecide = (actor: Actor): boolean => canWrite(actor);
 
 function fail(error: string): TransitionResult {
   return { ok: false, error };
@@ -138,7 +141,7 @@ export function transition(cr: CrSnapshot, action: CrAction, actor: Actor, opts:
     case "submit":
       if (cr.status !== "DRAFT") return fail("Only drafts can be submitted");
       if (actor.id !== cr.createdById) return fail("Only the creator can submit");
-      if (!CAN_MAKE.has(actor.role)) return fail("Role cannot submit change requests");
+      if (!canMake(actor)) return fail("Role cannot submit change requests");
       if (cr.patchCount === 0) return fail("Add at least one patch before submitting");
       if (cr.emergency && !cr.emergencyReason?.trim()) return fail("An emergency change needs a reason");
       return { ok: true, next: "PENDING_APPROVAL" };
@@ -146,7 +149,7 @@ export function transition(cr: CrSnapshot, action: CrAction, actor: Actor, opts:
     case "approve":
     case "reject":
       if (cr.status !== "PENDING_APPROVAL") return fail("Request is not pending approval");
-      if (!CAN_APPROVE.has(actor.role)) return fail("Role cannot approve or reject");
+      if (!canDecide(actor)) return fail("Role cannot approve or reject");
       if (actor.id === cr.createdById) {
         return fail("Maker-checker violation: creator cannot decide own request");
       }
@@ -158,16 +161,14 @@ export function transition(cr: CrSnapshot, action: CrAction, actor: Actor, opts:
 
     case "deploy":
       if (cr.status !== "APPROVED") return fail("Only approved requests can be deployed");
-      if (!CAN_MAKE.has(actor.role)) return fail("Role cannot start deployments");
+      if (!canMake(actor)) return fail("Role cannot start deployments");
       if (cr.approvalExpiresAt && (opts.now ?? new Date()).getTime() >= cr.approvalExpiresAt.getTime()) {
         return fail(`Approval expired on ${cr.approvalExpiresAt.toISOString().slice(0, 16).replace("T", " ")} UTC; cancel it and raise a new request`);
       }
       return { ok: true, next: "DEPLOYING" };
 
     case "cancel":
-      if (actor.role !== "ADMIN" && actor.id !== cr.createdById) {
-        return fail("Only the creator or an admin can cancel");
-      }
+      if (!canWrite(actor)) return fail("Only the creator or an admin can cancel");
       if (cr.status === "DEPLOYING") return fail("Cannot cancel while deploying");
       return { ok: true, next: "CANCELLED" };
   }

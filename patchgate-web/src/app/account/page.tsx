@@ -5,15 +5,10 @@ import { getAccountOverview } from "@/lib/auth/account-service";
 import { SESSION_COOKIE, sha256Hex } from "@/lib/auth/tokens";
 import { authMode, env } from "@/lib/env";
 import { PASSWORD_MIN } from "@/lib/auth/password";
+import { ROLE_LABEL, roleDescription } from "@/lib/auth/roles";
 import { Alert, Badge, Card, Loading, PageHeader, fmtDate, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
 import { ChangePasswordForm, RevokeOthersButton } from "./account-forms";
 
-const ROLE_LABEL: Record<string, string> = {
-  ADMIN: "Admin",
-  APPROVER: "Approver (checker)",
-  OPERATOR: "Operator (maker)",
-  VIEWER: "Viewer",
-};
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -42,7 +37,10 @@ async function Account() {
             <Field label="Username">
               <span className="font-mono">{overview.upn}</span>
             </Field>
-            <Field label="Role">{ROLE_LABEL[overview.role] ?? overview.role}</Field>
+            <Field label="Role">
+              <span title={roleDescription(overview.role, overview.bankName ? "bank" : "platform")}>{ROLE_LABEL[overview.role]}</span>
+              <span className="mt-0.5 block text-xs text-muted">{roleDescription(overview.role, overview.bankName ? "bank" : "platform")}</span>
+            </Field>
             <Field label="Organisation">{overview.bankName ?? "PatchGate team"}</Field>
             <Field label="Last sign-in">{fmtDate(overview.lastLoginAt)}</Field>
           </dl>

@@ -6,7 +6,7 @@ HTTPS calls to us. Tactical and the PCs never reach the internet, and the PCs ne
 
 ```
  Internet ──► PatchGate = "our server" (this PC)  https://patchgate.patchgate-lab.internal:3443
-                 ▲ local login (password + TOTP) · signed jobs · package downloads · audit feed
+                 ▲ local login (password; TOTP when AUTH_MFA=required) · signed jobs · package downloads · audit feed
                  │ HTTPS, outbound only
  ┌─ BANK A (Docker, internal networks) ───────┼──────────────────────────────────────────────────────┐
  │  bank-a-firewall (socat): forwards ONLY :3443 PatchGate + :6514 bank SIEM to the lab host          │
@@ -28,18 +28,23 @@ HTTPS calls to us. Tactical and the PCs never reach the internet, and the PCs ne
 | Bank A package cache | `https://pg-cache.patchgate-lab.internal:8443/repo/<repoPath>`. The certificate is issued by the lab CA (`lab/certs/out/ca.crt`). |
 | Bank A SIEM | `lab/siem/received.log` (TLS syslog :6514). Check the relay with `node lab/siem/check.mjs bank-a-connector-hq`. |
 
-**Credentials** (all gitignored): `lab/patchgate/lab-users.json` (local accounts; the TOTP secret is recorded at first
-sign-in), `lab/patchgate/secrets.env` + `lab/patchgate/secrets/job-signing-key.pem`, `lab/tactical/.env`,
+**Credentials** (all gitignored): `lab/patchgate/lab-users.json` (local accounts; with `AUTH_MFA=required` the TOTP
+secret is recorded at first sign-in), `lab/patchgate/secrets.env` + `lab/patchgate/secrets/job-signing-key.pem`, `lab/tactical/.env`,
 `lab/tactical/provision.json`, `lab/connector/bank-a/etc/{tactical-api-key,cache-key.pem}`.
 
 | Account | Role |
 |---|---|
-| `lab-admin@patchgate.lab` | platform ADMIN: banks, connectors, users, trust decisions |
-| `lab-operator@patchgate.lab` | platform OPERATOR (maker) |
-| `admin@bank-a.lab` / `approver@bank-a.lab` / `viewer@bank-a.lab` | Bank A ADMIN / APPROVER (checker) / VIEWER |
+| `lab-admin@patchgate.lab` | platform ADMIN: banks, connectors, users, trust decisions, raises change requests (maker) |
+| `lab-auditor@patchgate.lab` | platform AUDITOR: read-only across every bank |
+| `admin@bank-a.lab` / `approver@bank-a.lab` | Bank A ADMIN ×2 (bank admins approve = checkers; two so maker ≠ checker works inside the bank) |
+| `viewer@bank-a.lab` | Bank A AUDITOR (read-only; historic UPN) |
 
-To sign in from a browser on this PC, open the URL, enter the password from `lab-users.json`, then get a code with
-`node lab/patchgate/pg-api.mjs totp <upn>`. Add the secret to an authenticator app if you prefer. Scripts call the
+`lab-operator@patchgate.lab` (old platform operator) was mapped to AUDITOR by the role migration and is no longer used.
+
+**Sign-in is password only in the lab** (`AUTH_MFA=off`, set in `lab/patchgate/env.sh`; admins see a warning banner).
+Open the URL and enter the password from `lab-users.json` (`node lab/patchgate/show-login.mjs <upn>` prints it).
+To test with the 6-digit code: `AUTH_MFA=required bash lab/patchgate/start.sh` (after `stop.sh`), then get a code
+with `node lab/patchgate/pg-api.mjs totp <upn>` — existing authenticators still work. Scripts call the
 real API as a user with `node lab/patchgate/pg-api.mjs <upn> GET /api/...`.
 
 ## One-time setup (this PC)

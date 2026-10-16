@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Role } from "@/lib/auth/roles";
 
 /**
  * Platform-wide account security policy (pure rules). Persistence: security-store.ts; enforcement:
@@ -52,7 +53,7 @@ export function sessionsOverCap<T extends { id: string; createdAt: Date }>(sessi
 
 export interface ActivityRow {
   id: string;
-  role: "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN";
+  role: Role;
   tenantId: string | null;
   /** Latest of: last sign-in, account creation, live session use, administrator action on the account */
   lastActivityAt: Date;

@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { EyeOff, Eye, ShieldPlus } from "lucide-react";
 import { prisma } from "@/lib/db";
+import { canWrite } from "@/lib/auth/roles";
 import { withTenant } from "@/lib/tenancy";
 import { getPageTenant } from "@/lib/tenancy/page";
 import { ActionButton } from "@/components/action-button";
@@ -12,7 +13,7 @@ const MATCH_LABEL = { PRODUCT_CODE: "MSI product code", NAME_PUBLISHER: "name + 
 async function DiscoveryContent({ showIgnored }: { showIgnored: boolean }) {
   const { user, tenant } = await getPageTenant();
   const tenantId = tenant.id;
-  const isAdmin = user.role === "ADMIN";
+  const isAdmin = canWrite(user); // auditors: read-only
   const platformAdmin = isAdmin && user.tenantId === null;
 
   const { products, endpoints } = await withTenant(tenantId, async (tx) => ({

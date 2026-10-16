@@ -167,16 +167,18 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------------------------
 
 async function people() {
-  const mk = (upn: string, role: "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN", tenantId: string | null, name = upn) =>
+  const mk = (upn: string, role: import("@/lib/auth/roles").Role, tenantId: string | null, name = upn) =>
     admin.user.create({ data: { upn, name, role, tenantId } }).then(asSessionUser);
   return {
-    maker: await mk("maker@a.example", "OPERATOR", TENANT_A),
-    approver: await mk("approver@a.example", "APPROVER", TENANT_A),
+    // Bank A: three admins (maker, a checker, the admin) + an auditor; auditors get no action notifications.
+    maker: await mk("maker@a.example", "ADMIN", TENANT_A),
+    approver: await mk("approver@a.example", "ADMIN", TENANT_A),
     bankAdmin: await mk("admin@a.example", "ADMIN", TENANT_A),
+    bankAuditor: await mk("auditor@a.example", "AUDITOR", TENANT_A),
     bankBAdmin: await mk("admin@b.example", "ADMIN", TENANT_B),
-    bankBApprover: await mk("approver@b.example", "APPROVER", TENANT_B),
+    bankBAuditor: await mk("approver@b.example", "AUDITOR", TENANT_B),
     platformAdmin: await mk("padmin@pg.example", "ADMIN", null),
-    platformOperator: await mk("pop@pg.example", "OPERATOR", null),
+    platformAuditor: await mk("pop@pg.example", "AUDITOR", null),
   };
 }
 
@@ -192,7 +194,7 @@ const rows = (where: Record<string, unknown> = {}) => admin.notification.findMan
 // ---------------------------------------------------------------------------------------------
 
 describe("enqueue in the triggering transaction", () => {
-  it("submit → bank approvers + bank admin (not the maker, not bank B); approve → the maker", async () => {
+  it("submit → the bank's admins (not the maker, not auditors, not bank B); approve → the maker", async () => {
     const p = await people();
     const cr = await draftCr(p.maker);
     await applyAction(p.maker, TENANT_A, cr.id, "submit");
@@ -209,7 +211,7 @@ describe("enqueue in the triggering transaction", () => {
   it("a submitted request goes to the bank's approvers only (bank approval is always required)", async () => {
     const p = await people();
     await expect(admin.tenant.update({ where: { id: TENANT_A }, data: { requireBankApproval: false } })).rejects.toThrow();
-    await admin.user.create({ data: { upn: "pappr@pg.example", name: "PA", role: "APPROVER", tenantId: null } });
+    await admin.user.create({ data: { upn: "pappr@pg.example", name: "PA", role: "ADMIN", tenantId: null } });
     const cr = await draftCr(p.maker);
     await applyAction(p.maker, TENANT_A, cr.id, "submit");
     expect((await rows({ event: "CR_SUBMITTED" })).map((r) => r.target)).toEqual(["admin@a.example", "approver@a.example"]);
@@ -221,13 +223,13 @@ describe("enqueue in the triggering transaction", () => {
     await expect(
       withTenant(TENANT_A, async (tx) => {
         const n = await enqueueNotification(tx, { event: "CR_DEADLINE", tenantId: TENANT_A, crId: cr.id, deadline: new Date(), timedOut: 3 });
-        expect(n).toBe(3); // maker + bank admin + platform operator
+        expect(n).toBe(4); // the maker + the other bank admins + the platform admin (never auditors)
         throw new Error("boom");
       }),
     ).rejects.toThrow("boom");
     expect(await admin.notification.count()).toBe(0);
     await withTenant(TENANT_A, (tx) => enqueueNotification(tx, { event: "CR_DEADLINE", tenantId: TENANT_A, crId: cr.id, deadline: new Date(), timedOut: 3 }));
-    expect((await rows()).map((r) => r.target)).toEqual(["admin@a.example", "maker@a.example", "pop@pg.example"]);
+    expect((await rows()).map((r) => r.target)).toEqual(["admin@a.example", "approver@a.example", "maker@a.example", "padmin@pg.example"]);
   });
 
   it("an unscoped transaction (fetcher / auth code) is scoped to the row; another bank's scope is refused", async () => {
@@ -245,7 +247,7 @@ describe("enqueue in the triggering transaction", () => {
 
   it("credential resets notify the affected user only; personal opt-outs do not apply to them", async () => {
     const p = await people();
-    const viewer = asSessionUser(await admin.user.create({ data: { upn: "viewer@a.example", name: "Viewer", role: "VIEWER", tenantId: TENANT_A } }));
+    const viewer = asSessionUser(await admin.user.create({ data: { upn: "viewer@a.example", name: "Viewer", role: "AUDITOR", tenantId: TENANT_A } }));
     await userAction(p.bankAdmin, viewer.id, "reset-password");
     await userAction(p.bankAdmin, viewer.id, "reset-mfa");
     const r = (await rows()).map((x) => [x.event, x.target, x.tenantId]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
@@ -301,7 +303,7 @@ describe("delivery", () => {
 
     const now = new Date();
     const r = await deliverNotifications({ mailer, webhook: webhookDeps }, now);
-    expect(r).toMatchObject({ sent: 2, retrying: 1, dead: 1 });
+    expect(r).toMatchObject({ sent: 4, retrying: 1, dead: 1 }); // 3 bank admins + the platform admin; bounce; webhook
     const bounced = await admin.notification.findFirstOrThrow({ where: { target: REJECT_RCPT } });
     expect(bounced).toMatchObject({ status: "DEAD", attempts: 1 });
     expect(bounced.lastError).toMatch(/^SMTP 550/);
@@ -346,7 +348,10 @@ describe("settings, opt-outs and RLS isolation", () => {
     await updateNotificationSettings(p.bankAdmin, TENANT_A, { action: "add-webhook", url: `https://${HOOK_HOST}/services/A/A/tokenAAAA` });
     await expect(updateNotificationSettings(p.bankAdmin, TENANT_B, { action: "set-events", disabledEvents: [] })).rejects.toThrow(/Unknown bank/);
     await expect(updateNotificationSettings(p.bankAdmin, "platform", { action: "set-events", disabledEvents: [] })).rejects.toThrow(/Platform administrators/);
-    await expect(updateNotificationSettings(p.approver, TENANT_A, { action: "set-events", disabledEvents: [] })).rejects.toThrow(/Administrators only/);
+    await expect(updateNotificationSettings(p.bankAuditor, TENANT_A, { action: "set-events", disabledEvents: [] })).rejects.toThrow(/Administrators only/);
+    // auditors READ the settings (webhooks masked) but cannot change them
+    expect((await getNotificationSettings(p.bankAuditor, TENANT_A)).webhooks[0]?.display).toBe(`https://${HOOK_HOST}/…AAAA`);
+    await expect(getNotificationSettings(p.bankAuditor, TENANT_B)).rejects.toThrow(/Unknown bank/);
     await expect(updateNotificationSettings(p.bankAdmin, TENANT_A, { action: "add-webhook", url: "https://evil.example.com/x" })).rejects.toThrow(/not allowed/);
     await expect(updateNotificationSettings(p.bankAdmin, TENANT_A, { action: "set-events", disabledEvents: ["AUDIT_CHAIN_BROKEN"] })).rejects.toThrow(/cannot be switched off/);
     await updateNotificationSettings(p.platformAdmin, TENANT_B, { action: "set-events", disabledEvents: ["CR_SUBMITTED"] });
@@ -401,7 +406,7 @@ describe("watcher: connector offline / back online", () => {
     expect(await watchConnectors(new Date(t0.getTime() + 11 * 60_000))).toEqual({ offline: 1, online: 0 });
     expect(await watchConnectors(new Date(t0.getTime() + 20 * 60_000))).toEqual({ offline: 0, online: 0 }); // once per episode
     const offline = await rows({ event: "CONNECTOR_OFFLINE" });
-    expect(offline.map((r) => r.target)).toEqual(["admin@a.example", "padmin@pg.example"]);
+    expect(offline.map((r) => r.target)).toEqual(["admin@a.example", "approver@a.example", "maker@a.example", "padmin@pg.example"]);
     expect(offline[0].subject).toContain("Head office DC");
 
     const back = new Date(t0.getTime() + 45 * 60_000);

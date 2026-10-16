@@ -33,7 +33,7 @@ describe("WSUS catalog ingestion", () => {
   });
 
   it("approves only while DEPLOYING (not at APPROVED), and lists every managed group for revocation", async () => {
-    const u = await prisma.user.create({ data: { upn: "m@t", name: "M", role: "OPERATOR" } });
+    const u = await prisma.user.create({ data: { upn: "m@t", name: "M", role: "ADMIN" } });
     const ring = await prisma.ring.create({ data: { tenantId: TENANT_A, name: "Pilot", wsusGroup: "Ring1-Pilot", order: 1 } });
     // Another bank on the same platform: its rings / deployments never reach the legacy WSUS server.
     const ringB = await prisma.ring.create({ data: { tenantId: TENANT_B, name: "B-Prod", wsusGroup: "BankB-Prod", order: 2 } });

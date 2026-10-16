@@ -2,22 +2,22 @@ import "server-only";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { getPageUser } from "@/lib/auth/page-user";
+import { canRead, canWrite } from "@/lib/auth/roles";
 import type { SessionUser } from "@/lib/auth/session";
 import { Alert } from "@/components/ui";
 
-export const ROLE_LABEL: Record<SessionUser["role"], string> = {
-  ADMIN: "Admin",
-  APPROVER: "Approver (checker)",
-  OPERATOR: "Operator (maker)",
-  VIEWER: "Viewer",
-};
+export { ROLE_LABEL } from "@/lib/auth/roles";
 
-/** Server-side guard for /admin pages: signed in AND role ADMIN (platform or bank). */
-export async function getAdminUser(): Promise<{ user: SessionUser; denied: ReactNode | null }> {
+/**
+ * Server-side guard for /admin pages: signed in AND role ADMIN or AUDITOR (platform or bank).
+ * readOnly = auditor: the page shows the lists but no forms or actions (the APIs refuse them anyway).
+ */
+export async function getAdminUser(): Promise<{ user: SessionUser; denied: ReactNode | null; readOnly: boolean }> {
   const user = await getPageUser();
-  if (user.role !== "ADMIN") {
+  if (!canRead(user)) {
     return {
       user,
+      readOnly: true,
       denied: (
         <Alert tone="bad">
           Administrators only. Ask your PatchGate administrator if you need access. <Link href="/" className="underline">Back to the dashboard</Link>
@@ -25,7 +25,7 @@ export async function getAdminUser(): Promise<{ user: SessionUser; denied: React
       ),
     };
   }
-  return { user, denied: null };
+  return { user, denied: null, readOnly: !canWrite(user) };
 }
 
 export function AdminTabs({ active, platform }: { active: "overview" | "users" | "banks"; platform: boolean }) {

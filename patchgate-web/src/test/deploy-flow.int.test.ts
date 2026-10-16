@@ -40,8 +40,8 @@ function fakeTactical(installed: () => boolean): TacticalClient {
 async function seed() {
   // Platform operator prepares (maker); the bank's own approver decides (checker).
   const [maker, checker] = await Promise.all([
-    prisma.user.create({ data: { upn: "maker@t", name: "Maker", role: "OPERATOR" } }),
-    prisma.user.create({ data: { upn: "checker@t", name: "Checker", role: "APPROVER", tenantId: TENANT_A } }),
+    prisma.user.create({ data: { upn: "maker@t", name: "Maker", role: "ADMIN" } }),
+    prisma.user.create({ data: { upn: "checker@t", name: "Checker", role: "ADMIN", tenantId: TENANT_A } }),
   ]);
   const ring = await prisma.ring.create({ data: { tenantId: TENANT_A, name: "Ring0", wsusGroup: "Ring0", order: 0 } });
   const endpoint = await prisma.endpoint.create({
@@ -81,10 +81,10 @@ describe("end-to-end change request", () => {
     const cr = await createChangeRequest(maker, TENANT_A, { title: "Oct PT", ringId: ring.id, patchIds: [patch.id] });
 
     await applyAction(maker, TENANT_A, cr.id, "submit");
-    await expect(applyAction({ ...maker, role: "APPROVER", tenantId: TENANT_A }, TENANT_A, cr.id, "approve")).rejects.toThrow(/Maker-checker/);
+    await expect(applyAction({ ...maker, role: "ADMIN", tenantId: TENANT_A }, TENANT_A, cr.id, "approve")).rejects.toThrow(/Maker-checker/);
     await applyAction(checker, TENANT_A, cr.id, "approve");
 
-    await expect(startDeployment({ ...maker, role: "VIEWER" }, TENANT_A, cr.id)).rejects.toThrow();
+    await expect(startDeployment({ ...maker, role: "AUDITOR" }, TENANT_A, cr.id)).rejects.toThrow();
     await startDeployment(checker, TENANT_A, cr.id);
     expect(await prisma.deployment.count({ where: { changeRequestId: cr.id, status: "QUEUED" } })).toBe(1);
 

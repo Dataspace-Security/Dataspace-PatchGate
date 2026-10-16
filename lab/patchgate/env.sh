@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Shared environment for the lab PatchGate ("our server") — sourced by start.sh, users.sh and lab helpers.
-#   LAB_MODE=hosted (default): https://patchgate.<domain>:3443, AUTH_MODE=local (password + TOTP),
+#   LAB_MODE=hosted (default): https://patchgate.<domain>:3443, AUTH_MODE=local (password; TOTP when AUTH_MFA=required),
 #                              signed connector jobs (JOB_SIGNING_KEY_FILE), NO route to any bank Tactical.
 #   LAB_MODE=dev             : the old single-bank dev setup (dev user switcher, direct Tactical link,
 #                              http://localhost:3000, or https :3443 with LAB_HTTPS=1).
@@ -48,6 +48,9 @@ if [ "$LAB_MODE" = "hosted" ]; then
   unset TACTICAL_INSTALL_SCRIPT_ID
   export PATCH_REPO_URL="${PG_URL}/repo"     # legacy path only; PCs use their site's connector cache
   export AUTH_MODE=local
+  # Lab: password-only sign-in (no 6-digit code). Existing TOTP secrets are kept, so
+  # AUTH_MFA=required bash lab/patchgate/start.sh switches the code back on. Production: always "required".
+  export AUTH_MFA="${AUTH_MFA:-off}"
   export JOB_SIGNING_KEY_FILE="$(cygpath -m "$JOB_KEY")"
   export PUBLIC_BASE_URL="$PG_URL"
   # The bank SIEM receives the bank's audit chain through the CONNECTOR relay (not from our server).

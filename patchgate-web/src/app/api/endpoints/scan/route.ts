@@ -1,4 +1,4 @@
-import { getCurrentUser, requireRole, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { handle, ok } from "@/lib/api/response";
 import { appendAudit } from "@/lib/audit/service";
 import { requireTenant, withTenant } from "@/lib/tenancy";
@@ -8,7 +8,7 @@ export async function POST(req: Request): Promise<Response> {
   return handle(async () => {
     requireSameOrigin(req);
     const user = await getCurrentUser();
-    requireRole(user, ["OPERATOR", "APPROVER", "ADMIN"]);
+    requireWriter(user);
     const tenantId = await requireTenant(user);
     const count = await withTenant(tenantId, async (tx) => {
       const r = await tx.endpoint.updateMany({ where: { tenantId }, data: { lastScanRequestedAt: null, lastScanAt: null } });

@@ -4,18 +4,19 @@ import { listRings } from "@/lib/policies/rings";
 import { listWindows, previewWindow } from "@/lib/policies/windows";
 import { REBOOT_LABEL } from "@/lib/policies/reboot-labels";
 import { Badge, EmptyState, Loading, PageHeader, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
-import { SettingsTabs, getSettingsContext } from "../settings-shell";
+import { isPlatformReader } from "@/lib/auth/roles";
+import { ReadOnlyNotice, SettingsTabs, getSettingsContext } from "../settings-shell";
 import { WindowEditor } from "./window-forms";
 
 async function Windows() {
-  const { user, tenant, denied } = await getSettingsContext();
+  const { user, tenant, denied, readOnly } = await getSettingsContext();
   const header = (
     <>
       <PageHeader
         title="Maintenance windows"
         description="When a ring may be patched: a cron start time (5 fields, in the window's timezone) plus a duration. Previews are shown in the bank's timezone."
       />
-      <SettingsTabs active="windows" platformAdmin={user.tenantId === null && user.role === "ADMIN"} />
+      <SettingsTabs active="windows" platformAdmin={isPlatformReader(user)} />
     </>
   );
   if (denied) return <>{header}{denied}</>;
@@ -28,7 +29,7 @@ async function Windows() {
     <>
       {header}
       <div className="space-y-6">
-        <WindowEditor rings={ringOptions} bankTimezone={policy.timezone} />
+        {readOnly ? <ReadOnlyNotice /> : <WindowEditor rings={ringOptions} bankTimezone={policy.timezone} />}
         {windows.length === 0 ? (
           <EmptyState title="No maintenance windows">Without a window a ring&apos;s approved changes deploy as soon as they are started.</EmptyState>
         ) : (
@@ -42,7 +43,7 @@ async function Windows() {
                   <th>Reboot</th>
                   <th>Next start ({policy.timezone})</th>
                   <th className="text-right">Change requests</th>
-                  <th className="text-right">Actions</th>
+                  {!readOnly && <th className="text-right">Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -58,13 +59,15 @@ async function Windows() {
                       <td><Badge tone="neutral">{REBOOT_LABEL[w.rebootPolicy]}</Badge></td>
                       <td className="whitespace-nowrap text-xs">{next ? next.startLocal : <span className="text-danger">invalid schedule</span>}</td>
                       <td className="text-right tabular-nums">{w._count.changeRequests}</td>
-                      <td className="text-right">
-                        <WindowEditor
-                          rings={ringOptions}
-                          bankTimezone={policy.timezone}
-                          existing={{ id: w.id, name: w.name, ringId: w.ringId, cron: w.cron, durationMin: w.durationMin, timezone: w.timezone, rebootPolicy: w.rebootPolicy, inUse: w._count.changeRequests > 0 }}
-                        />
-                      </td>
+                      {!readOnly && (
+                        <td className="text-right">
+                          <WindowEditor
+                            rings={ringOptions}
+                            bankTimezone={policy.timezone}
+                            existing={{ id: w.id, name: w.name, ringId: w.ringId, cron: w.cron, durationMin: w.durationMin, timezone: w.timezone, rebootPolicy: w.rebootPolicy, inUse: w._count.changeRequests > 0 }}
+                          />
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

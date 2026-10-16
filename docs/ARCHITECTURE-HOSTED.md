@@ -10,7 +10,7 @@ the patch pipeline, verification and maker-checker rules there still apply.
 | Hosting | PatchGate runs on **our** server and domain. Banks are clients. |
 | Banks per server | **Several** (multi-tenant). A bank sees only its own PCs, requests, approvals and audit. |
 | Network | Inside each bank, only the **PatchGate Connector** (on the Tactical host) talks to the outside, and only to our domain/IP, **outbound HTTPS**. Nothing connects into a bank. Tactical server and PCs stay offline. |
-| Approvals | Our team **and** bank staff. Default policy: our operator prepares, a **bank approver** must approve. Configurable per bank. |
+| Approvals | Our team **and** bank staff. Our admin (or a bank admin) prepares, a **bank admin** of that bank must approve — always (not configurable). |
 | Login | PatchGate's own accounts: password + **mandatory MFA (TOTP)**, lockout, audited. No external IdP needed. |
 | Internet | Only PatchGate (our server) downloads from vendors. Unchanged. |
 
@@ -120,16 +120,17 @@ Consequences for the design:
 
 ## 5. Users and roles
 
+Two fixed roles, the same for our team and inside every bank (`src/lib/auth/roles.ts`; DB CHECK `User_role_scope`):
+
 | Role | Scope | Can |
 |---|---|---|
-| Platform admin | all banks | onboard banks, enrol connectors, manage our users, trust decisions |
-| Platform operator | assigned banks | create change requests (maker) |
-| Bank admin | own bank | manage bank users, rings, maintenance windows |
-| Bank approver | own bank | approve / reject change requests (checker) |
-| Bank viewer | own bank | read-only, reports |
+| Platform admin | all banks | onboard banks, enrol connectors, manage all users, trust decisions, rings/windows/settings for any bank, create change requests (maker), second approver of two-approver requests |
+| Platform auditor | all banks | read-only: every list a platform admin sees (banks, users, endpoints, patches, requests, connectors, audit chains, reports, operations); never one-time secrets |
+| Bank admin | own bank | manage bank users and settings, create change requests, **approve / reject** them (checker) |
+| Bank auditor | own bank | read-only, reports |
 
-Maker ≠ checker is always enforced. Every change request needs at least one approver from the bank itself — a platform rule that no admin can turn off (DB CHECK `Tenant_requireBankApproval_always`).
-Login: scrypt-hashed password (≥ 14 chars) + TOTP, lockout after 5 failures, 15-min idle and 8-h absolute sessions.
+Maker ≠ checker is always enforced. Every change request needs at least one approving admin from the bank itself — a platform rule that no admin can turn off (DB CHECK `Tenant_requireBankApproval_always`). Emergency / large requests need two distinct admins (at least one from the bank).
+Login: scrypt-hashed password (≥ 14 chars) + TOTP (`AUTH_MFA=required`, the default; `off` = password only, pre-go-live only), lockout after 5 failures, 15-min idle and 8-h absolute sessions.
 Every login is audited.
 
 ## 6. Delivery phases

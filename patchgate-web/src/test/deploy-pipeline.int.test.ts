@@ -101,8 +101,8 @@ interface PcSpec {
 /** Submitted + approved (+ started unless `start: false`) change request for PCs on connector `c` (window always open). */
 async function deploying(c: Conn, pcs: number | PcSpec[], patchIds: string[], opts: { start?: boolean } = {}) {
   const specs: PcSpec[] = typeof pcs === "number" ? Array.from({ length: pcs }, () => ({})) : pcs;
-  const maker = sessionUserOf(await admin.user.create({ data: { upn: `op${Math.random()}@pg`, name: "Op", role: "OPERATOR" } }));
-  const checker = sessionUserOf(await admin.user.create({ data: { upn: `ap${Math.random()}@a`, name: "Ap", role: "APPROVER", tenantId: TENANT_A } }));
+  const maker = sessionUserOf(await admin.user.create({ data: { upn: `op${Math.random()}@pg`, name: "Op", role: "ADMIN" } }));
+  const checker = sessionUserOf(await admin.user.create({ data: { upn: `ap${Math.random()}@a`, name: "Ap", role: "ADMIN", tenantId: TENANT_A } }));
   const ring = await admin.ring.create({ data: { tenantId: TENANT_A, name: `R${Math.random()}`, wsusGroup: `G${Math.random()}`, order: Math.floor(Math.random() * 1e6) } });
   const window = await admin.maintenanceWindow.create({ data: { tenantId: TENANT_A, ringId: ring.id, name: "Hourly", cron: "0 * * * *", durationMin: 120, timezone: "UTC" } });
   const endpoints = [];

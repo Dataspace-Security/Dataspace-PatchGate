@@ -54,7 +54,7 @@ export function writeRepoFile(repoDir: string, repoPath: string, content: string
 }
 
 /** A user row shaped like SessionUser. */
-export function sessionUserOf(u: { id: string; role: "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN"; upn: string; name: string; tenantId: string | null }) {
+export function sessionUserOf(u: { id: string; role: import("@/lib/auth/roles").Role; upn: string; name: string; tenantId: string | null }) {
   return { id: u.id, role: u.role, upn: u.upn, name: u.name, tenantId: u.tenantId };
 }
 

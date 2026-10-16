@@ -5,14 +5,14 @@ import { AdminTabs, getAdminUser } from "../admin-guard";
 import { BankRowActions, CreateBankForm } from "./bank-admin";
 
 async function BanksTable() {
-  const { user, denied } = await getAdminUser();
+  const { user, denied, readOnly } = await getAdminUser();
   if (denied) return denied;
   if (user.tenantId !== null) {
     return (
       <>
         <PageHeader title="Banks" />
         <AdminTabs active="banks" platform={false} />
-        <Alert tone="bad">Only PatchGate platform administrators manage banks.</Alert>
+        <Alert tone="bad">Only PatchGate platform staff see the list of banks.</Alert>
       </>
     );
   }
@@ -23,7 +23,7 @@ async function BanksTable() {
       <PageHeader title="Banks" description="Client banks hosted on this PatchGate. Deactivating a bank signs all of its users out and blocks their sign-in." />
       <AdminTabs active="banks" platform />
       <div className="space-y-6">
-        <CreateBankForm />
+        {readOnly ? <Alert tone="info">Read-only view (auditor).</Alert> : <CreateBankForm />}
         {banks.length === 0 ? (
           <EmptyState title="No banks yet">Onboard the first bank with “New bank”.</EmptyState>
         ) : (
@@ -37,7 +37,7 @@ async function BanksTable() {
                   <th>Change approval</th>
                   <th className="text-right">Users</th>
                   <th>Created</th>
-                  <th className="text-right">Actions</th>
+                  {!readOnly && <th className="text-right">Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -51,9 +51,11 @@ async function BanksTable() {
                     </td>
                     <td className="text-right tabular-nums">{b._count.users}</td>
                     <td className="whitespace-nowrap text-xs text-muted">{fmtDate(b.createdAt)}</td>
-                    <td className="text-right">
-                      <BankRowActions bank={{ id: b.id, name: b.name, slug: b.slug, active: b.active, requireBankApproval: b.requireBankApproval }} />
-                    </td>
+                    {!readOnly && (
+                      <td className="text-right">
+                        <BankRowActions bank={{ id: b.id, name: b.name, slug: b.slug, active: b.active, requireBankApproval: b.requireBankApproval }} />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

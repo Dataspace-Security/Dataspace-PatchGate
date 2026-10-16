@@ -157,7 +157,7 @@ export function PatchPicker({ patches, rings, canCreate }: Props) {
           <h2 className="font-semibold text-fg">New change request</h2>
           <p className="mt-0.5 text-xs text-muted">A second person (checker) must approve before anything deploys.</p>
         </div>
-        {!canCreate && <p className="rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning">Your role cannot create change requests.</p>}
+        {!canCreate && <p className="rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning">Read-only (auditor): only admins create change requests.</p>}
         <div className="rounded-lg bg-surface-2 px-3 py-2 text-sm">
           <span className="font-semibold text-fg">{selected.size}</span> <span className="text-muted">patch(es) selected</span>
         </div>
@@ -186,6 +186,11 @@ export function PatchPicker({ patches, rings, canCreate }: Props) {
             ))}
           </select>
         </label>
+        <details className="rounded-lg border border-border px-3 py-2" data-testid="cr-form-advanced">
+          <summary className="cursor-pointer select-none text-sm font-medium text-fg">
+            Advanced options <span className="font-normal text-muted">(reboot, emergency)</span>
+          </summary>
+          <div className="mt-3 space-y-4">
         <label className={labelCls}>
           Reboot
           <select className={inputCls} value={rebootPolicy} onChange={(e) => setRebootPolicy(e.target.value as typeof rebootPolicy)}>
@@ -208,6 +213,8 @@ export function PatchPicker({ patches, rings, canCreate }: Props) {
             <textarea className={inputCls} value={emergencyReason} onChange={(e) => setEmergencyReason(e.target.value)} required minLength={10} maxLength={500} rows={3} placeholder="Actively exploited vulnerability CVE-…; bank CISO request …" />
           </label>
         )}
+          </div>
+        </details>
         {error && <p role="alert" className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p>}
         <button type="submit" disabled={!canCreate || busy || selected.size === 0 || !ringId} className={`${buttonBase} ${BUTTON.primary} w-full`}>
           {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}

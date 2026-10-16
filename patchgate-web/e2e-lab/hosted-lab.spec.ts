@@ -6,16 +6,27 @@ import { freshTotp, labUser, recordTotpSecret } from "./lab-users";
 
 /**
  * Hosted-lab journey in a real browser against the running lab (no fakes):
- *   our staff sign in with password + TOTP → onboard a bank + one-time connector code in the UI →
+ *   our staff sign in (password; + TOTP when the lab runs AUTH_MFA=required) → onboard a bank + one-time connector code in the UI →
  *   Bank A's real connector is online → switch bank → endpoints / discovery → a bank user sees only
  *   their own bank. Screenshots: e2e-lab/screenshots/.
  */
 test.describe.configure({ mode: "serial" });
 
 const SHOTS = "e2e-lab/screenshots";
+// Two roles everywhere: ADMIN (platform: maker; bank: also the checker) and AUDITOR (read-only).
 const ADMIN = "lab-admin@patchgate.lab";
-const OPERATOR = "lab-operator@patchgate.lab";
-const BANK_A_APPROVER = "approver@bank-a.lab";
+const AUDITOR = "lab-auditor@patchgate.lab";
+const BANK_A_APPROVER = "approver@bank-a.lab"; // a second Bank A ADMIN — the bank's checker
+
+/** "off" when the lab runs AUTH_MFA=off (password-only sign-in; the lab default), from /api/health. */
+let mfa = "required";
+test.beforeAll(async ({ browser }) => {
+  // Through the browser: it carries the pinned lab certificate (launchOptions), the API request context does not.
+  const page = await browser.newPage();
+  await page.goto(`${process.env.LAB_URL ?? "https://patchgate.patchgate-lab.internal:3443"}/api/health`);
+  mfa = (JSON.parse((await page.textContent("body")) ?? "{}") as { mfa?: string }).mfa ?? "required";
+  await page.close();
+});
 const BANK_B = { name: "Bank B", slug: "bank-b" };
 const ENROLL_CODE_RE = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){4}$/;
 
@@ -53,7 +64,10 @@ async function submitStep(page: Page, upn: string, step: "password" | "totp", su
   }
 }
 
-/** The real local sign-in form: password → authenticator (enrol on first use, secret read off the page). */
+/**
+ * The real local sign-in form: password → authenticator (enrol on first use, secret read off the page).
+ * With AUTH_MFA=off the password step signs in directly (no code).
+ */
 async function signIn(page: Page, upn: string, shotPrefix?: string): Promise<void> {
   await page.context().clearCookies();
   await page.goto("/login");
@@ -62,6 +76,11 @@ async function signIn(page: Page, upn: string, shotPrefix?: string): Promise<voi
   await page.getByLabel("Password").fill(labUser(upn).password);
   const code = page.getByLabel("Verification code");
   await submitStep(page, upn, "password", async () => page.getByRole("button", { name: "Continue" }).click());
+  if (mfa === "off") {
+    await page.waitForURL((u) => !u.pathname.startsWith("/login"));
+    await page.waitForLoadState("networkidle");
+    return;
+  }
   await expect(code).toBeVisible();
   const enrolKey = page.locator("code.select-all");
   if (await enrolKey.isVisible()) {
@@ -80,17 +99,21 @@ async function signIn(page: Page, upn: string, shotPrefix?: string): Promise<voi
   await page.waitForLoadState("networkidle");
 }
 
-test("platform admin: password + TOTP sign-in", async ({ page }) => {
+test("platform admin signs in (password, + TOTP when required); the MFA-off warning shows for admins", async ({ page }) => {
   await page.goto("/login");
   await waitForHydratedForm(page);
   await expect(page.getByLabel("Username")).toBeVisible();
   await shot(page, "01-login");
   await signIn(page, ADMIN, "02-admin");
   await expect(bankSwitcher(page)).toBeVisible(); // bank switcher = PatchGate staff
+  const banner = page.getByTestId("mfa-off-banner");
+  if (mfa === "off") await expect(banner).toContainText("Two-factor sign-in is OFF — turn AUTH_MFA=required on before go-live");
+  else await expect(banner).toHaveCount(0);
   await shot(page, "03-admin-home");
 });
 
 test("wrong TOTP code is refused", async ({ page }) => {
+  test.skip(mfa === "off", "AUTH_MFA=off: there is no code step");
   await page.goto("/login");
   await waitForHydratedForm(page);
   await page.getByLabel("Username").fill(ADMIN);
@@ -102,9 +125,22 @@ test("wrong TOTP code is refused", async ({ page }) => {
   await expect(page).toHaveURL(/\/login/);
 });
 
-test("platform operator: first sign-in enrols the authenticator", async ({ page }) => {
-  await signIn(page, OPERATOR, "04-operator");
-  await expect(bankSwitcher(page)).toBeVisible();
+test("platform auditor: reads every bank, has no write buttons, no MFA banner, and the API refuses changes", async ({ page }) => {
+  await signIn(page, AUDITOR, "04-auditor");
+  await expect(bankSwitcher(page)).toBeVisible(); // platform staff: may switch the bank it reads
+  await expect(page.getByTestId("mfa-off-banner")).toHaveCount(0); // admins only
+  await page.goto("/admin/banks");
+  await expect(page.getByText("Read-only view (auditor).")).toBeVisible();
+  await expect(page.getByRole("cell", { name: "bank-a", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New bank" })).toHaveCount(0);
+  await page.goto("/connectors");
+  await expect(page.getByRole("button", { name: "Enrol a site connector" })).toHaveCount(0);
+  const r = await page.evaluate(async () => {
+    const res = await fetch("/api/admin/tenants", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "x-auditor", name: "Nope" }) });
+    return res.status;
+  });
+  expect(r).toBe(403);
+  await shot(page, "04-auditor-banks-read-only");
 });
 
 test("admin onboards a bank and creates a one-time connector enrolment code in the UI", async ({ page }) => {
@@ -270,8 +306,8 @@ test("connectors table fits 1440x900 with Revoke visible", async ({ page }) => {
   await shotThemes(page, "15-connectors-1440");
 });
 
-test("maker (platform operator) creates a Bank A Ring0 change request with a third-party app", async ({ page }) => {
-  await signIn(page, OPERATOR);
+test("maker (platform admin) creates a Bank A Ring0 change request with a third-party app", async ({ page }) => {
+  await signIn(page, ADMIN);
   await actFor(page, "Bank A");
   await page.goto("/patches?kind=THIRD_PARTY&needed=0");
   const box = page.locator("tbody input[type=checkbox]:not([disabled])").first();
@@ -293,22 +329,21 @@ test("maker (platform operator) creates a Bank A Ring0 change request with a thi
   await shotThemes(page, "17-operator-submitted");
 });
 
-test("platform admin cannot approve when Bank A requires a bank approver", async ({ page }) => {
+test("platform staff cannot approve: the checker must be a Bank A admin (auditor: no buttons, API 403)", async ({ page }) => {
   expect(crPath).not.toBe("");
-  await signIn(page, ADMIN);
+  await signIn(page, AUDITOR);
   await actFor(page, "Bank A");
   await page.goto(crPath);
   await expect(page.getByText(/^Pending approval$/i)).toBeVisible();
-  await expect(page.getByText(/requires the checker to be one of its own approvers/)).toBeVisible();
+  await expect(page.getByText(/The checker must be an admin of Bank A/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve" })).toHaveCount(0);
-  // Server-side too: the API refuses (state machine), not just a hidden button.
-  // In-page fetch: the browser holds the session cookies and the pinned lab certificate.
+  // Server-side too, not just a hidden button. In-page fetch: the browser holds the session cookies.
   const r = await page.evaluate(async (u) => {
     const res = await fetch(u, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     return { status: res.status, body: await res.text() };
   }, `/api${crPath}/approve`);
-  expect(r.status).toBe(409);
-  expect(r.body).toMatch(/Bank approval required/);
+  expect(r.status).toBe(403);
+  expect(r.body).toMatch(/auditors cannot change anything/);
 });
 
 test("a different person (Bank A approver) approves; the frozen target count is shown", async ({ page }) => {
@@ -332,17 +367,25 @@ test("a different person (Bank A approver) approves; the frozen target count is 
   await shotThemes(page, "19-approver-approved");
 });
 
-test("a Bank A viewer cannot see admin pages", async ({ page }) => {
-  await signIn(page, BANK_A_VIEWER, "20-bank-a-viewer");
-  for (const path of ["/admin", "/admin/users", "/admin/banks"]) {
-    await page.goto(path);
-    await expect(page.getByText("Administrators only.")).toBeVisible();
-    await expect(page.getByRole("button", { name: "New bank" })).toHaveCount(0);
-  }
-  const apiStatus = await page.evaluate(async () => (await fetch("/api/admin/tenants")).status);
-  expect([401, 403]).toContain(apiStatus);
+test("a Bank A auditor reads its own bank's admin pages but cannot change anything", async ({ page }) => {
+  await signIn(page, BANK_A_VIEWER, "20-bank-a-auditor");
   await page.goto("/admin/users");
-  await shotThemes(page, "21-viewer-admin-denied");
+  await expect(page.getByText(/Read-only view \(auditor\)/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "New user" })).toHaveCount(0);
+  await expect(page.getByText("admin@bank-a.lab")).toBeVisible();
+  await expect(page.getByText("lab-admin@patchgate.lab")).toHaveCount(0); // never platform users
+  await page.goto("/admin/banks");
+  await expect(page.getByText("Only PatchGate platform staff see the list of banks.")).toBeVisible();
+  const status = await page.evaluate(async () => {
+    const list = await fetch("/api/admin/tenants");
+    const create = await fetch("/api/admin/users", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ upn: "x@bank-a.lab", name: "X", role: "ADMIN" }) });
+    return { list: list.status, create: create.status, body: await create.text() };
+  });
+  expect(status.list).toBe(200); // own bank only
+  expect(status.create).toBe(403);
+  expect(status.body).not.toMatch(/temporaryPassword/);
+  await page.goto("/admin/users");
+  await shotThemes(page, "21-bank-auditor-read-only");
 });
 
 test("audit page shows the change-request events on the Bank A chain", async ({ page }) => {

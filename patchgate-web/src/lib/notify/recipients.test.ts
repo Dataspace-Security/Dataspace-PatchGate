@@ -4,15 +4,15 @@ import { isCritical, optOutableEvents, toggleableEvents } from "./events";
 
 const A = "bank-a";
 const users: CandidateUser[] = [
-  { id: "maker", upn: "maker@a.example", role: "OPERATOR", tenantId: A, active: true },
-  { id: "appr", upn: "Approver@A.example", role: "APPROVER", tenantId: A, active: true },
+  { id: "maker", upn: "maker@a.example", role: "ADMIN", tenantId: A, active: true },
+  { id: "appr", upn: "Approver@A.example", role: "ADMIN", tenantId: A, active: true },
   { id: "adm", upn: "admin@a.example", role: "ADMIN", tenantId: A, active: true },
-  { id: "other", upn: "appr@b.example", role: "APPROVER", tenantId: "bank-b", active: true },
+  { id: "aud", upn: "auditor@a.example", role: "AUDITOR", tenantId: A, active: true },
+  { id: "other", upn: "appr@b.example", role: "ADMIN", tenantId: "bank-b", active: true },
   { id: "pAdm", upn: "padmin@pg.example", role: "ADMIN", tenantId: null, active: true },
-  { id: "pOp", upn: "pop@pg.example", role: "OPERATOR", tenantId: null, active: true },
-  { id: "pAppr", upn: "pappr@pg.example", role: "APPROVER", tenantId: null, active: true },
-  { id: "off", upn: "off@a.example", role: "APPROVER", tenantId: A, active: false },
-  { id: "noMail", upn: "localonly", role: "APPROVER", tenantId: A, active: true },
+  { id: "pAud", upn: "paud@pg.example", role: "AUDITOR", tenantId: null, active: true },
+  { id: "off", upn: "off@a.example", role: "ADMIN", tenantId: A, active: false },
+  { id: "noMail", upn: "localonly", role: "ADMIN", tenantId: A, active: true },
 ];
 const empty = new Set<string>();
 
@@ -21,11 +21,11 @@ function emails(r: ReturnType<typeof resolveRecipients>): string[] {
 }
 
 describe("resolveRecipients", () => {
-  it("CR submitted: approvers + admins of THIS bank, never the maker, inactive or non-mail users", () => {
+  it("CR submitted: the admins (checkers) of THIS bank, never the maker, auditors, inactive or non-mail users", () => {
     const r = resolveRecipients({
       event: "CR_SUBMITTED",
       tenantId: A,
-      spec: { bankRoles: ["APPROVER", "ADMIN"], platformRoles: [], excludeUserIds: ["maker"], webhooks: { bank: true, platform: false } },
+      spec: { bankRoles: ["ADMIN"], platformRoles: [], excludeUserIds: ["maker"], webhooks: { bank: true, platform: false } },
       users,
       optOuts: empty,
       bankDisabled: empty,
@@ -35,31 +35,31 @@ describe("resolveRecipients", () => {
     expect(r.webhookScopes).toEqual(["bank"]);
   });
 
-  it("platform approvers are added when bank approval is not required", () => {
+  it("platform admins are added when asked (never platform auditors)", () => {
     const r = resolveRecipients({
       event: "CR_SUBMITTED",
       tenantId: A,
-      spec: { bankRoles: ["APPROVER"], platformRoles: ["APPROVER", "ADMIN"], excludeUserIds: ["maker"], webhooks: { bank: true, platform: true } },
+      spec: { bankRoles: ["ADMIN"], platformRoles: ["ADMIN"], excludeUserIds: ["maker"], webhooks: { bank: true, platform: true } },
       users,
       optOuts: empty,
       bankDisabled: empty,
       platformDisabled: empty,
     });
-    expect(emails(r)).toEqual(["approver@a.example", "padmin@pg.example", "pappr@pg.example"]);
+    expect(emails(r)).toEqual(["admin@a.example", "approver@a.example", "padmin@pg.example"]);
     expect(r.webhookScopes).toEqual(["bank", "platform"]);
   });
 
-  it("failed rollouts: the maker + bank admins + platform operators", () => {
+  it("failed rollouts: the maker + bank admins + platform admins (auditors get no action notifications)", () => {
     const r = resolveRecipients({
       event: "RING_STOPPED",
       tenantId: A,
-      spec: { userIds: ["maker"], bankRoles: ["ADMIN"], platformRoles: ["OPERATOR"], webhooks: { bank: true, platform: true } },
+      spec: { userIds: ["maker"], bankRoles: ["ADMIN"], platformRoles: ["ADMIN"], webhooks: { bank: true, platform: true } },
       users,
       optOuts: empty,
       bankDisabled: empty,
       platformDisabled: empty,
     });
-    expect(emails(r)).toEqual(["admin@a.example", "maker@a.example", "pop@pg.example"]);
+    expect(emails(r)).toEqual(["admin@a.example", "approver@a.example", "maker@a.example", "padmin@pg.example"]);
   });
 
   it("personal opt-outs and scope switches drop non-critical events", () => {
@@ -70,7 +70,7 @@ describe("resolveRecipients", () => {
       users,
     };
     const optedOut = resolveRecipients({ ...base, optOuts: new Set([optOutKey("adm", "CONNECTOR_OFFLINE")]), bankDisabled: empty, platformDisabled: empty });
-    expect(emails(optedOut)).toEqual(["padmin@pg.example"]);
+    expect(emails(optedOut)).toEqual(["approver@a.example", "maker@a.example", "padmin@pg.example"]);
     const bankOff = resolveRecipients({ ...base, optOuts: empty, bankDisabled: new Set(["CONNECTOR_OFFLINE"]), platformDisabled: empty });
     expect(emails(bankOff)).toEqual(["padmin@pg.example"]);
     expect(bankOff.webhookScopes).toEqual(["platform"]);

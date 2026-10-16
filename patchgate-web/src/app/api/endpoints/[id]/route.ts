@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getCurrentUser, requireRole, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { handle, ok } from "@/lib/api/response";
 import { appendAudit } from "@/lib/audit/service";
 import { DomainError } from "@/lib/errors";
@@ -12,7 +12,7 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/endpoints/[id]
   return handle(async () => {
     requireSameOrigin(req);
     const user = await getCurrentUser();
-    requireRole(user, ["OPERATOR", "APPROVER", "ADMIN"]);
+    requireWriter(user);
     const tenantId = await requireTenant(user);
     const { id } = await ctx.params;
     const { ringId } = bodySchema.parse(await req.json());

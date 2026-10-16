@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { canRead } from "@/lib/auth/roles";
 import { Suspense } from "react";
 import { Clock, Database, ShieldCheck, Upload } from "lucide-react";
 import { getPageUser } from "@/lib/auth/page-user";
@@ -34,7 +35,7 @@ async function connectorRelayStatus(tx: Tx, tenantId: string): Promise<{ pending
 
 async function AuditContent({ requested }: { requested: string | undefined }) {
   const user = await getPageUser();
-  const privileged = user.role === "APPROVER" || user.role === "ADMIN";
+  const privileged = canRead(user); // admins and auditors verify the chain and SIEM anchors
   // One chain per bank + the platform chain. Bank users only ever see their own bank's chain.
   const scope = await resolveAuditChain(user, requested);
   const chainId = scope.tenantId;

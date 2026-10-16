@@ -69,7 +69,7 @@ describe("local sign-in", () => {
     // A new bank can open change requests immediately: standard rollout rings exist.
     const rings = await prisma.ring.findMany({ where: { tenantId: bank.id }, orderBy: { order: "asc" } });
     expect(rings.map((r) => r.name)).toEqual(["Ring0-Test", "Ring1-Pilot", "Ring2-Prod"]);
-    const { user, temporaryPassword } = await createUser(root, { upn: "Alice@Bank-A.test", name: "Alice", role: "APPROVER", tenantId: bank.id });
+    const { user, temporaryPassword } = await createUser(root, { upn: "Alice@Bank-A.test", name: "Alice", role: "ADMIN", tenantId: bank.id });
     expect(user.upn).toBe("alice@bank-a.test");
     expect(user.mustChangePassword).toBe(true);
     const stored = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
@@ -115,7 +115,7 @@ describe("local sign-in", () => {
 
   it("rejects a replayed TOTP code (each 30-s step is usable once)", async () => {
     const root = await platformAdmin();
-    const { user, temporaryPassword } = await createUser(root, { upn: "bob@platform.test", name: "Bob", role: "OPERATOR", tenantId: null });
+    const { user, temporaryPassword } = await createUser(root, { upn: "bob@platform.test", name: "Bob", role: "ADMIN", tenantId: null });
     const enrol = expectStep(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, T0), "enroll");
     const change = expectStep(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, T0), META, T0), "change-password");
     expectStep(await changePasswordStep(change.challengeToken, STRONG, META, T0), "done");
@@ -130,7 +130,7 @@ describe("local sign-in", () => {
 
   it("uses one generic message for unknown users, wrong passwords and deactivated accounts", async () => {
     const root = await platformAdmin();
-    const { user } = await createUser(root, { upn: "carol@platform.test", name: "Carol", role: "VIEWER", tenantId: null });
+    const { user } = await createUser(root, { upn: "carol@platform.test", name: "Carol", role: "AUDITOR", tenantId: null });
     const unknown = await beginPasswordLogin({ upn: "nobody@platform.test", password: STRONG }, META, T0);
     const wrong = await beginPasswordLogin({ upn: user.upn, password: "not-the-password-at-all" }, META, T0);
     await updateUser(root, user.id, { active: false });
@@ -168,7 +168,7 @@ describe("local sign-in", () => {
   it("expired challenges and deactivated banks stop the sign-in", async () => {
     const root = await platformAdmin();
     const bank = await createTenant(root, { slug: "bank-b", name: "Bank B", active: true, requireBankApproval: true });
-    const { user, temporaryPassword } = await createUser(root, { upn: "dave@bank-b.test", name: "Dave", role: "VIEWER", tenantId: bank.id });
+    const { user, temporaryPassword } = await createUser(root, { upn: "dave@bank-b.test", name: "Dave", role: "AUDITOR", tenantId: bank.id });
     const enrol = expectStep(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, T0), "enroll");
     expect(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, at(301)), META, at(301))).toMatchObject({ ok: false, restart: true });
 
@@ -183,7 +183,7 @@ describe("user administration", () => {
     const a = await createTenant(root, { slug: "bank-a", name: "Bank A", active: true, requireBankApproval: true });
     const b = await createTenant(root, { slug: "bank-b", name: "Bank B", active: true, requireBankApproval: true });
     const adminA = (await createUser(root, { upn: "admin@bank-a.test", name: "Admin A", role: "ADMIN", tenantId: a.id })).user;
-    const userB = (await createUser(root, { upn: "user@bank-b.test", name: "User B", role: "VIEWER", tenantId: b.id })).user;
+    const userB = (await createUser(root, { upn: "user@bank-b.test", name: "User B", role: "AUDITOR", tenantId: b.id })).user;
     return { root, a, b, bankAdmin: asActor(adminA), userB };
   }
 
@@ -191,10 +191,10 @@ describe("user administration", () => {
     const { root, a, b, bankAdmin, userB } = await twoBanks();
 
     // Creating: forced into their own bank; never a platform user or another bank's user.
-    const own = await createUser(bankAdmin, { upn: "teller@bank-a.test", name: "Teller", role: "OPERATOR" });
+    const own = await createUser(bankAdmin, { upn: "teller@bank-a.test", name: "Teller", role: "AUDITOR" });
     expect(own.user.tenantId).toBe(a.id);
     await expect(createUser(bankAdmin, { upn: "x@platform.test", name: "X", role: "ADMIN", tenantId: null })).rejects.toBeInstanceOf(AuthError);
-    await expect(createUser(bankAdmin, { upn: "y@bank-b.test", name: "Y", role: "VIEWER", tenantId: b.id })).rejects.toBeInstanceOf(AuthError);
+    await expect(createUser(bankAdmin, { upn: "y@bank-b.test", name: "Y", role: "AUDITOR", tenantId: b.id })).rejects.toBeInstanceOf(AuthError);
 
     // Other bank / platform users are invisible and untouchable.
     for (const target of [userB.id, root.id]) {
@@ -209,8 +209,11 @@ describe("user administration", () => {
     await expect(createTenant(bankAdmin, { slug: "bank-c", name: "Bank C", active: true, requireBankApproval: true })).rejects.toBeInstanceOf(AuthError);
     await expect(updateTenant(bankAdmin, a.id, { active: false })).rejects.toBeInstanceOf(AuthError);
 
-    // Non-admins can't administer at all.
-    await expect(listUsers({ ...bankAdmin, role: "APPROVER" })).rejects.toMatchObject({ status: 403 });
+    // Auditors see their bank's users (read-only) but cannot administer; retired roles see nothing.
+    expect((await listUsers({ ...bankAdmin, role: "AUDITOR" })).map((u) => u.upn).sort()).toEqual(["admin@bank-a.test", "teller@bank-a.test"]);
+    await expect(createUser({ ...bankAdmin, role: "AUDITOR" }, { upn: "z@bank-a.test", name: "Z", role: "AUDITOR" })).rejects.toMatchObject({ status: 403 });
+    await expect(userAction({ ...bankAdmin, role: "AUDITOR" }, own.user.id, "reset-password")).rejects.toMatchObject({ status: 403 });
+    await expect(listUsers({ ...bankAdmin, role: "VIEWER" })).rejects.toMatchObject({ status: 403 });
 
     // In-bank management works and is audited on the bank's chain.
     const reset = await userAction(bankAdmin, own.user.id, "reset-password");
@@ -222,20 +225,20 @@ describe("user administration", () => {
   it("nobody can deactivate or demote themselves; the last active platform admin is kept", async () => {
     const root = await platformAdmin();
     await expect(updateUser(root, root.id, { active: false })).rejects.toMatchObject({ status: 409 });
-    await expect(updateUser(root, root.id, { role: "OPERATOR" })).rejects.toMatchObject({ status: 409 });
+    await expect(updateUser(root, root.id, { role: "AUDITOR" })).rejects.toMatchObject({ status: 409 });
 
     const second = asActor((await createUser(root, { upn: "second@platform.test", name: "Second", role: "ADMIN", tenantId: null })).user);
     // root demotes second (fine: root remains) …
-    await updateUser(root, second.id, { role: "VIEWER" });
+    await updateUser(root, second.id, { role: "AUDITOR" });
     // … and a concurrent / stale request by `second` must not remove the last platform admin.
-    await expect(updateUser(second, root.id, { role: "VIEWER" })).rejects.toThrow(/At least one active platform administrator/);
+    await expect(updateUser(second, root.id, { role: "AUDITOR" })).rejects.toThrow(/At least one active platform administrator/);
     await expect(updateUser(second, root.id, { active: false })).rejects.toThrow(/At least one active platform administrator/);
     expect(await prisma.user.count({ where: { role: "ADMIN", tenantId: null, active: true } })).toBe(1);
   });
 
   it("deactivation kills sessions; MFA reset forces re-enrolment", async () => {
     const root = await platformAdmin();
-    const { user, temporaryPassword } = await createUser(root, { upn: "erin@platform.test", name: "Erin", role: "OPERATOR", tenantId: null });
+    const { user, temporaryPassword } = await createUser(root, { upn: "erin@platform.test", name: "Erin", role: "ADMIN", tenantId: null });
     const enrol = expectStep(await beginPasswordLogin({ upn: user.upn, password: temporaryPassword }, META, T0), "enroll");
     const change = expectStep(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, T0), META, T0), "change-password");
     expectStep(await changePasswordStep(change.challengeToken, STRONG, META, T0), "done");
@@ -256,6 +259,6 @@ describe("user administration", () => {
     const root = await platformAdmin();
     await createTenant(root, { slug: "bank-a", name: "Bank A", active: true, requireBankApproval: true });
     await expect(createTenant(root, { slug: "bank-a", name: "Again", active: true, requireBankApproval: true })).rejects.toMatchObject({ status: 409 });
-    await expect(createUser(root, { upn: root.upn, name: "Dup", role: "VIEWER", tenantId: null })).rejects.toMatchObject({ status: 409 });
+    await expect(createUser(root, { upn: root.upn, name: "Dup", role: "AUDITOR", tenantId: null })).rejects.toMatchObject({ status: 409 });
   });
 });

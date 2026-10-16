@@ -1,4 +1,4 @@
-import { getCurrentUser, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { handle, ok } from "@/lib/api/response";
 import { updateConnectorLimits } from "@/lib/connector/admin";
 
@@ -8,6 +8,7 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/connector/admi
     requireSameOrigin(req);
     const { id } = await ctx.params;
     const user = await getCurrentUser();
+    requireWriter(user);
     const input: unknown = await req.json().catch(() => null);
     return ok(await updateConnectorLimits(user, id, input));
   });

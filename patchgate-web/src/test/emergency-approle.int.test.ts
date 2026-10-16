@@ -60,7 +60,7 @@ afterAll(async () => {
   await admin.$disconnect();
 });
 
-const mk = (upn: string, role: "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN", tenantId: string | null, extra: { createdAt?: Date; lastLoginAt?: Date } = {}) =>
+const mk = (upn: string, role: import("@/lib/auth/roles").Role, tenantId: string | null, extra: { createdAt?: Date; lastLoginAt?: Date } = {}) =>
   admin.user.create({ data: { upn, name: upn, role, tenantId, ...extra } }).then(asSessionUser);
 
 describe("as the production-like runtime role", () => {
@@ -86,9 +86,9 @@ describe("as the production-like runtime role", () => {
   });
 
   it("emergency: two distinct approvers, maker refused by the trigger, double deploy-now bypass, deploy", async () => {
-    const maker = await mk("maker@pg", "OPERATOR", null);
-    const c1 = await mk("c1@a", "APPROVER", TENANT_A);
-    const c2 = await mk("c2@a", "APPROVER", TENANT_A);
+    const maker = await mk("maker@pg", "ADMIN", null);
+    const c1 = await mk("c1@a", "ADMIN", TENANT_A);
+    const c2 = await mk("c2@a", "ADMIN", TENANT_A);
     const ring = await admin.ring.create({ data: { tenantId: TENANT_A, name: "Ring0-Test", wsusGroup: "Ring0-Test", order: 0 } });
     const win = await admin.maintenanceWindow.create({ data: { tenantId: TENANT_A, ringId: ring.id, name: "Yearly", cron: "0 3 1 1 *", durationMin: 60, timezone: "UTC" } });
     await admin.endpoint.create({ data: { tenantId: TENANT_A, tacticalAgentId: "ag-1", hostname: "PC-1", ringId: ring.id } });
@@ -116,9 +116,9 @@ describe("as the production-like runtime role", () => {
     const root = await mk("root@pg", "ADMIN", null);
     await mk("root2@pg", "ADMIN", null);
     const long = new Date(Date.now() - 400 * 86_400_000);
-    const idle = await mk("idle@a", "OPERATOR", TENANT_A, { createdAt: long, lastLoginAt: long });
+    const idle = await mk("idle@a", "ADMIN", TENANT_A, { createdAt: long, lastLoginAt: long });
     await updateSecurityPolicy(root, { maxSessionsPerUser: 1 });
-    const u = await mk("bob@a", "APPROVER", TENANT_A);
+    const u = await mk("bob@a", "ADMIN", TENANT_A);
     await authTx((tx) => createSession(tx, { userId: u.id, now: new Date(Date.now() - 1000), meta: { ip: null, userAgent: null } }));
     await authTx((tx) => createSession(tx, { userId: u.id, now: new Date(), meta: { ip: null, userAgent: null } }));
     expect(await admin.session.count({ where: { userId: u.id } })).toBe(1);

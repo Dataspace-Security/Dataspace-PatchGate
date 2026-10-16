@@ -38,10 +38,10 @@ async function user(upn: string, role: SessionUser["role"], tenantId: string | n
 }
 
 async function fixture(endpoints = 3): Promise<Fixture> {
-  const maker = await user("maker@platform.test", "OPERATOR", null);
-  const bankApprover1 = await user("checker1@bank-a.test", "APPROVER", TENANT_A);
+  const maker = await user("maker@platform.test", "ADMIN", null);
+  const bankApprover1 = await user("checker1@bank-a.test", "ADMIN", TENANT_A);
   const bankApprover2 = await user("checker2@bank-a.test", "ADMIN", TENANT_A);
-  const platformApprover = await user("approver@platform.test", "APPROVER", null);
+  const platformApprover = await user("approver@platform.test", "ADMIN", null);
   const platformApprover2 = await user("approver2@platform.test", "ADMIN", null);
   const { ringId, windowId } = await withTenant(TENANT_A, async (tx) => {
     const ring = await tx.ring.create({ data: { tenantId: TENANT_A, name: "Ring0-Test", wsusGroup: "Ring0-Test", order: 0, rebootPolicy: "NEVER" } });

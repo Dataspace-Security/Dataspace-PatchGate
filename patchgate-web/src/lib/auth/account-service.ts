@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/db";
+import type { UserRole } from "@prisma/client";
 import { auditAuth } from "./audit";
 import { checkNewPassword, SAME_PASSWORD, type ChangeOwnPasswordInput } from "./account-policy";
 import { registerFailure } from "./local-login";
@@ -113,7 +114,7 @@ export interface AccountSessionView {
 export interface AccountOverview {
   upn: string;
   name: string;
-  role: string;
+  role: UserRole;
   bankName: string | null;
   lastLoginAt: Date | null;
   passwordChangedAt: Date | null;

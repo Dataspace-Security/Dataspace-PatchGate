@@ -97,8 +97,9 @@ async function prepare(tx: Tx, input: NotifyInput): Promise<Prepared | null> {
           tenantId: input.tenantId,
           facts,
           spec: {
-            bankRoles: ["APPROVER", "ADMIN"],
-            platformRoles: platformToo ? ["APPROVER", "ADMIN"] : [],
+            // Checkers = the bank's admins (auditors are read-only and get no action notifications).
+            bankRoles: ["ADMIN"],
+            platformRoles: platformToo ? ["ADMIN"] : [],
             excludeUserIds: [cr.createdById],
             webhooks: { bank: true, platform: platformToo },
           },
@@ -122,7 +123,7 @@ async function prepare(tx: Tx, input: NotifyInput): Promise<Prepared | null> {
       return {
         tenantId: input.tenantId,
         facts: { ...facts, ...extra },
-        spec: { userIds: [cr.createdById], bankRoles: ["ADMIN"], platformRoles: ["OPERATOR"], webhooks: { bank: true, platform: true } },
+        spec: { userIds: [cr.createdById], bankRoles: ["ADMIN"], platformRoles: ["ADMIN"], webhooks: { bank: true, platform: true } },
       };
     }
     case "CONNECTOR_OFFLINE":

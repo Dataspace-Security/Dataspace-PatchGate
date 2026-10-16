@@ -1,11 +1,11 @@
 import { Suspense } from "react";
-import { listTenants, listUsers } from "@/lib/auth/admin-service";
-import { Badge, EmptyState, Loading, PageHeader, fmtDate, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
+import { canResetCredentials, listTenants, listUsers } from "@/lib/auth/admin-service";
+import { Alert, Badge, EmptyState, Loading, PageHeader, fmtDate, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
 import { AdminTabs, ROLE_LABEL, getAdminUser } from "../admin-guard";
 import { CreateUserForm, UserActions } from "./user-admin";
 
 async function UsersTable() {
-  const { user: actor, denied } = await getAdminUser();
+  const { user: actor, denied, readOnly } = await getAdminUser();
   if (denied) return denied;
   const platform = actor.tenantId === null;
   const [users, tenants] = await Promise.all([listUsers(actor), listTenants(actor)]);
@@ -24,7 +24,11 @@ async function UsersTable() {
       />
       <AdminTabs active="users" platform={platform} />
       <div className="space-y-6">
-        <CreateUserForm platform={platform} banks={bankOptions} ownBankName={platform ? null : (tenants[0]?.name ?? null)} />
+        {readOnly ? (
+          <Alert tone="info">Read-only view (auditor): you can see every account in your scope but cannot change anything.</Alert>
+        ) : (
+          <CreateUserForm platform={platform} banks={bankOptions} ownBankName={platform ? null : (tenants[0]?.name ?? null)} />
+        )}
         {users.length === 0 ? (
           <EmptyState title="No users yet" />
         ) : (
@@ -37,7 +41,7 @@ async function UsersTable() {
                   <th>Role</th>
                   <th>Status</th>
                   <th>Last sign-in</th>
-                  <th className="text-right">Actions</th>
+                  {!readOnly && <th className="text-right">Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -65,13 +69,16 @@ async function UsersTable() {
                         </div>
                       </td>
                       <td className="whitespace-nowrap text-xs text-muted">{fmtDate(u.lastLoginAt)}</td>
-                      <td className="text-right">
-                        <UserActions
-                          user={{ id: u.id, upn: u.upn, name: u.name, role: u.role, active: u.active, locked }}
-                          self={self}
-                          canResetCredentials={platform || u.role === "VIEWER" || u.role === "OPERATOR"}
-                        />
-                      </td>
+                      {!readOnly && (
+                        <td className="text-right">
+                          <UserActions
+                            user={{ id: u.id, upn: u.upn, name: u.name, role: u.role, active: u.active, locked }}
+                            self={self}
+                            platform={platform}
+                            canResetCredentials={canResetCredentials(platform ? "platform" : "bank", "reset-password", u.role)}
+                          />
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

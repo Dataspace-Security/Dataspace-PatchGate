@@ -1,4 +1,4 @@
-import { getCurrentUser, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { handle, ok } from "@/lib/api/response";
 import { createEnrollmentCode } from "@/lib/connector/admin";
 
@@ -10,6 +10,7 @@ export async function POST(req: Request): Promise<Response> {
   return handle(async () => {
     requireSameOrigin(req);
     const user = await getCurrentUser();
+    requireWriter(user);
     const input: unknown = await req.json().catch(() => null);
     return ok(await createEnrollmentCode(user, input, new URL(req.url).origin), 201);
   });

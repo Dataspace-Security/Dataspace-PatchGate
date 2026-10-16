@@ -93,7 +93,7 @@ export async function resetDb(db: RawDb): Promise<void> {
 }
 
 /** Session-user shape for service calls (tenantId null = PatchGate staff). */
-export function asSessionUser(u: { id: string; role: "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN"; upn: string; name: string; tenantId: string | null }) {
+export function asSessionUser(u: { id: string; role: import("@/lib/auth/roles").Role; upn: string; name: string; tenantId: string | null }) {
   return { id: u.id, role: u.role, upn: u.upn, name: u.name, tenantId: u.tenantId };
 }
 

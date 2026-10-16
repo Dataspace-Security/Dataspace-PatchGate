@@ -4,10 +4,10 @@ import { requiredApprovalsOf, transition, windowBypassGranted, type Actor, type 
 const BANK_A = "bank-a";
 const BANK_B = "bank-b";
 
-// Platform operator (our team) prepares; bank A staff approve.
-const maker: Actor = { id: "u-maker", role: "OPERATOR", tenantId: null };
-const checker: Actor = { id: "u-checker", role: "APPROVER", tenantId: BANK_A };
-const viewer: Actor = { id: "u-viewer", role: "VIEWER", tenantId: BANK_A };
+// Platform admin (our team) prepares; bank A admins approve; auditors (read-only) can do nothing.
+const maker: Actor = { id: "u-maker", role: "ADMIN", tenantId: null };
+const checker: Actor = { id: "u-checker", role: "ADMIN", tenantId: BANK_A };
+const viewer: Actor = { id: "u-viewer", role: "AUDITOR", tenantId: BANK_A };
 
 function cr(overrides: Partial<CrSnapshot> = {}): CrSnapshot {
   return { status: "DRAFT", createdById: maker.id, patchCount: 2, tenantId: BANK_A, requireBankApproval: true, ...overrides };
@@ -24,7 +24,7 @@ describe("change request state machine", () => {
   });
 
   it("refuses submit by someone who is not the creator", () => {
-    const r = transition(cr(), "submit", { id: "other", role: "OPERATOR", tenantId: null });
+    const r = transition(cr(), "submit", { id: "other", role: "ADMIN", tenantId: null });
     expect(r.ok).toBe(false);
   });
 
@@ -34,16 +34,22 @@ describe("change request state machine", () => {
   });
 
   it("enforces maker-checker: creator cannot approve own request even as approver", () => {
-    const makerApprover: Actor = { id: maker.id, role: "APPROVER", tenantId: BANK_A };
+    const makerApprover: Actor = { id: maker.id, role: "ADMIN", tenantId: BANK_A };
     const r = transition(cr({ status: "PENDING_APPROVAL" }), "approve", makerApprover);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/maker-checker/i);
   });
 
-  it("does not let operators or viewers approve", () => {
+  it("does not let auditors (or retired roles) make, approve, reject, deploy or cancel", () => {
     const pending = cr({ status: "PENDING_APPROVAL" });
-    expect(transition(pending, "approve", { id: "x", role: "OPERATOR", tenantId: BANK_A }).ok).toBe(false);
-    expect(transition(pending, "approve", viewer).ok).toBe(false);
+    const platformAuditor: Actor = { id: "x", role: "AUDITOR", tenantId: null };
+    for (const a of [viewer, platformAuditor, { id: "y", role: "APPROVER", tenantId: BANK_A } as Actor, { id: "z", role: "OPERATOR", tenantId: null } as Actor]) {
+      expect(transition(pending, "approve", a).ok).toBe(false);
+      expect(transition(pending, "reject", a).ok).toBe(false);
+      expect(transition(cr({ status: "APPROVED" }), "deploy", a).ok).toBe(false);
+      expect(transition(cr({ status: "APPROVED" }), "cancel", a).ok).toBe(false);
+      expect(transition(cr({ createdById: a.id }), "submit", a).ok).toBe(false);
+    }
   });
 
   it("lets an approver reject back", () => {
@@ -77,7 +83,7 @@ describe("change request state machine", () => {
 
 describe("per-bank approval policy", () => {
   const pending = (o: Partial<CrSnapshot> = {}) => cr({ status: "PENDING_APPROVAL", ...o });
-  const platformApprover: Actor = { id: "u-our-approver", role: "APPROVER", tenantId: null };
+  const platformApprover: Actor = { id: "u-our-approver", role: "ADMIN", tenantId: null };
   const platformAdmin: Actor = { id: "u-our-admin", role: "ADMIN", tenantId: null };
   const bankAdmin: Actor = { id: "u-bank-admin", role: "ADMIN", tenantId: BANK_A };
 
@@ -101,7 +107,7 @@ describe("per-bank approval policy", () => {
   });
 
   it("maker-checker still applies to bank staff with the policy off", () => {
-    const bankMaker: Actor = { id: "u-bank-maker", role: "APPROVER", tenantId: BANK_A };
+    const bankMaker: Actor = { id: "u-bank-maker", role: "ADMIN", tenantId: BANK_A };
     const r = transition(pending({ createdById: bankMaker.id, requireBankApproval: false }), "approve", bankMaker);
     expect(r.ok).toBe(false);
   });
@@ -113,7 +119,7 @@ describe("per-bank approval policy", () => {
   });
 
   it("a user of another bank can do nothing at all on this bank's request", () => {
-    const otherApprover: Actor = { id: "u-b-approver", role: "APPROVER", tenantId: BANK_B };
+    const otherApprover: Actor = { id: "u-b-approver", role: "ADMIN", tenantId: BANK_B };
     const otherAdmin: Actor = { id: "u-b-admin", role: "ADMIN", tenantId: BANK_B };
     for (const policy of [true, false]) {
       expect(transition(pending({ requireBankApproval: policy }), "approve", otherApprover).ok).toBe(false);
@@ -127,8 +133,8 @@ describe("per-bank approval policy", () => {
 });
 
 describe("emergency changes (two distinct approvers)", () => {
-  const bankApprover2: Actor = { id: "u-checker-2", role: "APPROVER", tenantId: BANK_A };
-  const platformApprover: Actor = { id: "u-our-approver", role: "APPROVER", tenantId: null };
+  const bankApprover2: Actor = { id: "u-checker-2", role: "ADMIN", tenantId: BANK_A };
+  const platformApprover: Actor = { id: "u-our-approver", role: "ADMIN", tenantId: null };
   const emergency = (o: Partial<CrSnapshot> = {}) =>
     cr({ status: "PENDING_APPROVAL", emergency: true, emergencyReason: "CVE exploited in the wild", requiredApprovals: 2, ...o });
   const approval = (a: Actor, deployNow = false): PriorApproval => ({ userId: a.id, approverBankId: a.tenantId, deployNow });
@@ -151,7 +157,7 @@ describe("emergency changes (two distinct approvers)", () => {
   });
 
   it("the maker is never one of the approvers (maker-checker still holds)", () => {
-    const makerApprover: Actor = { id: maker.id, role: "APPROVER", tenantId: BANK_A };
+    const makerApprover: Actor = { id: maker.id, role: "ADMIN", tenantId: BANK_A };
     for (const approvals of [[], [approval(checker)]]) {
       const r = transition(emergency({ approvals }), "approve", makerApprover);
       expect(r.ok).toBe(false);

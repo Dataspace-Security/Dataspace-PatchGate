@@ -88,12 +88,26 @@ share). The install token in `patchgate-pc.json` expires (default 72 h): renew w
 
 > Screenshot placeholder: `docs/img/step3-gpo.png`
 
+## Who does what (roles)
+
+Two roles, the same for our team and inside every bank:
+
+| Role | Platform (our team, `tenantId` empty) | Bank (`tenantId` set) |
+|---|---|---|
+| **Admin** (`ADMIN`) | everything, for every bank: banks, users, connectors, apps/patches, rings/windows, notification settings; raises change requests (maker); may be the **second** approver of a two-approver request | its own bank: users, settings; raises change requests **and approves them** (the bank's checker) |
+| **Auditor** (`AUDITOR`) | read-only across every bank: banks, users, endpoints, patches, change requests, connectors, audit chains (incl. per-bank), reports/exports, operations | read-only within its bank: the same pages for its own bank |
+
+The normal flow is short: **pick patches → create the request → a bank admin approves → deploy.** Rings,
+maintenance windows, emergency changes, notification rules and the approval policy are under **Advanced
+settings** (sidebar) and the change request's **Advanced options**; the defaults work out of the box.
+A request is never approved by the person who raised it, and always by an admin of the bank itself.
+
 ## How to check it worked
 
 | Step | Check | Good result |
 |---|---|---|
 | 1 | `sudo installers/server/install-patchgate.sh --status` | every service `healthy`; `/api/health -> 200` |
-| 1 | sign in at `https://<domain>` | password change + authenticator set-up, then the dashboard |
+| 1 | sign in at `https://<domain>` | password change + authenticator set-up (unless `AUTH_MFA=off`), then the dashboard |
 | 2 | `sudo /opt/patchgate-site/runtime/install-site.sh --status` | connector `check` ends with `{"healthy":true}` |
 | 2 | PatchGate → Connectors | the site is **online** (last seen < 1 min) |
 | 3 | on the PC: `Get-Service tacticalrmm` | `Running`; log `C:\ProgramData\PatchGate\agent-install.log` ends with `done` |

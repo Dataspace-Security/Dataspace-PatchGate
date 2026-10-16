@@ -43,7 +43,7 @@ interface Enrolled {
 
 async function enrolled(upn: string, encrypt: (secret: Buffer, owner: string) => string): Promise<Enrolled> {
   const secret = generateTotpSecret();
-  const u = await prisma.user.create({ data: { upn, name: upn, role: "VIEWER", tenantId: TENANT_B, passwordHash: await hashPassword(STRONG), totpEnabled: true } });
+  const u = await prisma.user.create({ data: { upn, name: upn, role: "AUDITOR", tenantId: TENANT_B, passwordHash: await hashPassword(STRONG), totpEnabled: true } });
   await prisma.user.update({ where: { id: u.id }, data: { totpSecretEnc: encrypt(secret, u.id) } });
   return { id: u.id, upn, secret };
 }
@@ -61,7 +61,7 @@ async function seed() {
   const a = await enrolled("a@bank-b.test", (s, o) => encryptSecret(s, OLD, o)); // old key, key-id format
   const b = await enrolled("b@bank-b.test", (s, o) => legacyBox(s, OLD, o)); // old key, legacy format
   const c = await enrolled("c@bank-b.test", (s, o) => encryptSecret(s, NEW, o)); // already current
-  const pendingOwner = await prisma.user.create({ data: { upn: "d@bank-b.test", name: "d", role: "VIEWER", tenantId: TENANT_B, passwordHash: await hashPassword(STRONG) } });
+  const pendingOwner = await prisma.user.create({ data: { upn: "d@bank-b.test", name: "d", role: "AUDITOR", tenantId: TENANT_B, passwordHash: await hashPassword(STRONG) } });
   const pendingSecret = generateTotpSecret();
   await prisma.authChallenge.create({
     data: { id: "e".repeat(64), userId: pendingOwner.id, kind: "ENROLL", returnTo: "/", pendingSecretEnc: encryptSecret(pendingSecret, OLD, pendingOwner.id), expiresAt: at(5) },

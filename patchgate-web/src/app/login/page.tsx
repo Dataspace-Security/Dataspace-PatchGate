@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { connection } from "next/server";
 import { LogIn, ShieldCheck } from "lucide-react";
-import { authMode } from "@/lib/env";
+import { authMode, mfaRequired } from "@/lib/env";
 import { safeReturnTo } from "@/lib/auth/claims";
 import { Alert, BUTTON, Loading, buttonBase } from "@/components/ui";
 import { LocalLoginForm } from "./local-login-form";
@@ -38,7 +38,7 @@ async function LoginCard({ searchParams }: { searchParams: PageProps<"/login">["
       </div>
       {msg && <Alert tone={msg.tone}>{msg.text}</Alert>}
       {mode === "local" ? (
-        <LocalLoginForm returnTo={returnTo} />
+        <LocalLoginForm returnTo={returnTo} mfa={mfaRequired()} />
       ) : mode === "oidc" ? (
         <a href={`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`} className={`${buttonBase} ${BUTTON.primary} w-full justify-center`}>
           <LogIn size={16} /> Sign in with bank SSO

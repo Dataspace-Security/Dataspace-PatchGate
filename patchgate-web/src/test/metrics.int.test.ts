@@ -52,7 +52,7 @@ const HB_OK = { version: "1.4.0", cache: { files: 3, bytes: 100, freeBytes: 5_00
 async function seed(): Promise<void> {
   await resetDb(admin);
   await admin.$executeRawUnsafe(`DELETE FROM "WorkerStepRun"`);
-  const maker = await admin.user.create({ data: { upn: "maker@bank-a.test", name: "Maker", role: "OPERATOR", tenantId: TENANT_A } });
+  const maker = await admin.user.create({ data: { upn: "maker@bank-a.test", name: "Maker", role: "ADMIN", tenantId: TENANT_A } });
   const ringA = await admin.ring.create({ data: { tenantId: TENANT_A, name: "Ring0", wsusGroup: "R0", order: 0 } });
 
   const a1 = await admin.connector.create({ data: { tenantId: TENANT_A, name: "HQ", publicKey: "k1", version: "1.4.0", lastSeenAt: ago(60_000), heartbeat: HB_OK } });

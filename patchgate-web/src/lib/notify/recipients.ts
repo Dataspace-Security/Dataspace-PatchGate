@@ -1,3 +1,4 @@
+import type { Role } from "@/lib/auth/roles";
 import { isCritical, type NotificationEvent } from "./events";
 
 /**
@@ -9,7 +10,7 @@ import { isCritical, type NotificationEvent } from "./events";
  *    critical events (audit/SIEM integrity, account security) are always delivered.
  */
 
-export type Role = "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN";
+export type { Role } from "@/lib/auth/roles";
 
 export interface CandidateUser {
   id: string;

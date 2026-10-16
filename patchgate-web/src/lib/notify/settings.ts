@@ -4,6 +4,7 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { appendAudit } from "@/lib/audit/service";
 import { AuthError, type SessionUser } from "@/lib/auth/session";
+import { canRead, canWrite } from "@/lib/auth/roles";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { DomainError } from "@/lib/errors";
@@ -55,7 +56,17 @@ export function webhookId(url: string): string {
 
 /** Who may manage which scope: platform admins any; bank admins their own bank only. */
 export function assertCanManage(actor: Pick<SessionUser, "role" | "tenantId">, scope: string): void {
-  if (actor.role !== "ADMIN") throw new AuthError("Administrators only", 403);
+  if (!canWrite(actor)) throw new AuthError("Administrators only", 403);
+  assertScope(actor, scope);
+}
+
+/** Who may SEE a scope's settings (webhooks always masked): admins and auditors, same scope rule. */
+export function assertCanView(actor: Pick<SessionUser, "role" | "tenantId">, scope: string): void {
+  if (!canRead(actor)) throw new AuthError("Administrators or auditors only", 403);
+  assertScope(actor, scope);
+}
+
+function assertScope(actor: Pick<SessionUser, "role" | "tenantId">, scope: string): void {
   if (scope === PLATFORM_SCOPE) {
     if (actor.tenantId !== null) throw new AuthError("Platform administrators only", 403);
     return;
@@ -76,7 +87,7 @@ async function scopeName(scope: string): Promise<string> {
 }
 
 export async function getNotificationSettings(actor: SessionUser, scope: string): Promise<SettingsView> {
-  assertCanManage(actor, scope);
+  assertCanView(actor, scope);
   const name = await scopeName(scope);
   const row = await inScope(scope, (tx) => tx.notificationSetting.findUnique({ where: { scope } }));
   const disabled = new Set(row?.disabledEvents ?? []);
@@ -193,11 +204,16 @@ export interface OutboxRow {
 export type OutboxFilter = "recent" | "failed";
 
 function requirePlatformAdmin(actor: SessionUser): void {
-  if (actor.tenantId !== null || actor.role !== "ADMIN") throw new AuthError("Platform administrators only", 403);
+  if (actor.tenantId !== null || !canWrite(actor)) throw new AuthError("Platform administrators only", 403);
+}
+
+/** The outbox (targets: e-mail addresses, webhooks masked) is visible to platform admins and auditors. */
+function requirePlatformReader(actor: SessionUser): void {
+  if (actor.tenantId !== null || !canRead(actor)) throw new AuthError("Platform staff only", 403);
 }
 
 export async function listOutbox(actor: SessionUser, filter: OutboxFilter = "recent", take = 100): Promise<OutboxRow[]> {
-  requirePlatformAdmin(actor);
+  requirePlatformReader(actor);
   const rows = await withPlatform((tx) =>
     tx.notification.findMany({
       where: filter === "failed" ? { OR: [{ status: { in: ["DEAD", "SKIPPED"] } }, { status: "PENDING", attempts: { gt: 0 } }] } : {},
@@ -221,7 +237,7 @@ export async function listOutbox(actor: SessionUser, filter: OutboxFilter = "rec
 }
 
 export async function outboxCounts(actor: SessionUser): Promise<Record<string, number>> {
-  requirePlatformAdmin(actor);
+  requirePlatformReader(actor);
   const g = await withPlatform((tx) => tx.notification.groupBy({ by: ["status"], _count: { _all: true } }));
   return Object.fromEntries(g.map((x) => [x.status, x._count._all]));
 }

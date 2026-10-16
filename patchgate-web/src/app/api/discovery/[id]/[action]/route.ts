@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getCurrentUser, requireRole, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { fail, handle, ok } from "@/lib/api/response";
 import { approveAllowlistRequest, declineAllowlistRequest, manageDiscovered, setDiscoveredIgnored } from "@/lib/discovery/service";
 import { isPlatformAdmin, requirePlatformAdmin, requireTenant } from "@/lib/tenancy";
@@ -16,7 +16,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/discovery/[id]/
   return handle(async () => {
     requireSameOrigin(req);
     const user = await getCurrentUser();
-    requireRole(user, ["ADMIN"]);
+    requireWriter(user);
     const { id, action } = await ctx.params;
     if (action === "approve" || action === "decline") {
       requirePlatformAdmin(user);

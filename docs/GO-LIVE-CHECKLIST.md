@@ -25,6 +25,7 @@ Legend: **[YOU]** = your decision or action · **[OPS]** = your server admin · 
 | B4 | OPS | One-shot `migrate`, then `docker compose up -d` (§3). | ☐ |
 | B5 | OPS | `deploy/scripts/smoke-test.sh` — every check PASS. | ☐ |
 | B6 | OPS | Create the first platform admin with the tools image (§5); sign in and enrol the authenticator. | ☐ |
+| B6a | OPS | **`AUTH_MFA` must be `required`** (or unset) in `deploy/.env.production`: `/api/health` shows `"mfa":"required"`, no "Two-factor sign-in is OFF" banner, no `auth.mfa_disabled` event after the last restart. | ☐ |
 | B7 | OPS | Monitoring: alerts from RUNBOOK §8 (readiness auditChain/siemExport/repoQuota, connector offline > 10 min, job failure rate, disk, certificate expiry). | ☐ |
 | B8 | OPS | Restore drill once (§7.3) and record the result. | ☐ |
 
@@ -33,14 +34,14 @@ Legend: **[YOU]** = your decision or action · **[OPS]** = your server admin · 
 | # | Who | Step | Done |
 |---|---|---|---|
 | C1 | YOU | Admin → Banks: create the bank (gets rings Test/Pilot/Production automatically). Choose: approval by bank staff required (default ON), Windows updates via PatchGate (default) or the bank's own WSUS. | ☐ |
-| C2 | YOU | Admin → Users: create the bank's admin and approvers (temporary passwords handed over out of band; they must enrol an authenticator). | ☐ |
+| C2 | YOU | Admin → Users: create the bank's admins (they approve; two if bank staff also raise requests) and any auditors (read-only). Temporary passwords handed over out of band; they must enrol an authenticator. | ☐ |
 | C3 | BANK | Provide a small Linux VM (or Docker host) next to their Tactical server for the connector; internal TLS certificate for the package cache; firewall: outbound 443 ONLY to our domain/IP, inbound from PC subnets to the cache port. | ☐ |
 | C4 | YOU | Connectors → Enrol: create a one-time code for the site. Send the init command and the **job-key fingerprint** to the bank over two different channels. | ☐ |
 | C5 | BANK | Run the init command on the connector host. The connector refuses to enrol if the fingerprint does not match. Register the three PatchGate PowerShell scripts in their Tactical and put the script ids in the connector config (connector README). | ☐ |
 | C6 | BANK | Optional but recommended: set the bank-held trust policy in the connector config (`trust.publishers`, `trust.agentSha256`) so even a compromised vendor platform could not push other software. | ☐ |
 | C7 | BANK | Point their SIEM at the connector's audit relay (TLS syslog) and enable the chain-break/regression/silence rules (SECURITY.md). | ☐ |
 | C8 | YOU | Connectors page shows the site ONLINE; set LAN limits for the site (concurrent installs, bandwidth cap). | ☐ |
-| C9 | BANK + YOU | Pilot: Ring0 (a few test PCs) → maker creates a change request, bank approver approves, install inside the maintenance window, check inventory confirmation and the bank SIEM. Then Ring1, then Ring2. | ☐ |
+| C9 | BANK + YOU | Pilot: Ring0 (a few test PCs) → maker creates a change request, a bank admin approves, install inside the maintenance window, check inventory confirmation and the bank SIEM. Then Ring1, then Ring2. | ☐ |
 
 ## D. Known limits at go-live (accepted or planned)
 

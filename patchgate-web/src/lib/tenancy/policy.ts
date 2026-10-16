@@ -6,6 +6,7 @@
  * - A user with a tenantId belongs to that bank and ALWAYS acts for it; the cookie is ignored for them.
  */
 import { DomainError } from "@/lib/errors";
+import type { Role } from "@/lib/auth/roles";
 
 /** Cookie holding the bank a platform user is acting for (value = Tenant.id). */
 export const TENANT_COOKIE = "pg_tenant";
@@ -18,13 +19,16 @@ export function isValidTenantId(id: unknown): id is string {
 }
 
 export interface TenantUser {
-  role: "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN";
+  role: Role;
   tenantId: string | null;
 }
 
 export function isPlatformUser(user: TenantUser): boolean {
   return user.tenantId === null;
 }
+
+/** Our team reading across banks: platform admins and platform auditors (read-only). */
+export { isPlatformReader } from "@/lib/auth/roles";
 
 /** Trust decisions, the shared catalog and bank onboarding: our admins only. */
 export function isPlatformAdmin(user: TenantUser): boolean {

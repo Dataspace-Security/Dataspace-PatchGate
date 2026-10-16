@@ -7,7 +7,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TENANT_A, TENANT_B, asSessionUser, configureTestEnv, resetDb } from "./helpers";
 
-type TestUser = { id: string; role: "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN"; upn: string; name: string; tenantId: string | null };
+type TestUser = { id: string; role: import("@/lib/auth/roles").Role; upn: string; name: string; tenantId: string | null };
 
 const ctx = vi.hoisted(() => ({ user: null as TestUser | null, tenantCookie: undefined as string | undefined }));
 
@@ -61,10 +61,10 @@ async function seed() {
   const mk = (upn: string, role: TestUser["role"], tenantId: string | null) => prisma.user.create({ data: { upn, name: upn, role, tenantId } }).then(asSessionUser);
   const users = {
     platformAdmin: await mk("admin@pg", "ADMIN", null),
-    platformOperator: await mk("operator@pg", "OPERATOR", null),
+    platformAuditor: await mk("auditor@pg", "AUDITOR", null),
     adminA: await mk("admin@a", "ADMIN", TENANT_A),
     adminB: await mk("admin@b", "ADMIN", TENANT_B),
-    approverA: await mk("approver@a", "APPROVER", TENANT_A),
+    auditorA: await mk("auditor@a", "AUDITOR", TENANT_A),
   };
   const ringA = await withTenant(TENANT_A, async (tx) => {
     const r = await tx.ring.create({ data: { tenantId: TENANT_A, name: "Ring0-Test", wsusGroup: "Ring0-Test", order: 0 } });
@@ -106,7 +106,7 @@ describe("settings access", () => {
     expect((await prisma.ring.findUniqueOrThrow({ where: { id: ringA.id } })).name).toBe("Ring0-Test");
   });
 
-  it("platform admin acts for the selected bank; operators/approvers are refused; no bank selected = 409", async () => {
+  it("platform admin acts for the selected bank; auditors read but are refused changes; no bank selected = 409", async () => {
     const { users, ringA } = await seed();
     as(users.platformAdmin);
     expect((await ringsRoute.GET(req("GET", "/api/settings/rings"))).status).toBe(409);
@@ -115,9 +115,12 @@ describe("settings access", () => {
     expect(ok.success).toBe(true);
     // wsusGroup followed the name (it was the default)
     expect(await prisma.ring.findUniqueOrThrow({ where: { id: ringA.id } })).toMatchObject({ name: "Ring0-Lab", wsusGroup: "Ring0-Lab" });
-    for (const u of [users.platformOperator, users.approverA]) {
+    for (const u of [users.platformAuditor, users.auditorA]) {
       as(u, TENANT_A);
+      expect((await ringsRoute.GET(req("GET", "/api/settings/rings"))).status).toBe(200);
+      expect((await approvalsRoute.GET(req("GET", "/api/settings/approvals"))).status).toBe(200);
       expect((await ringsRoute.POST(req("POST", "/api/settings/rings", { name: "X-ring" }))).status).toBe(403);
+      expect((await approvalsRoute.PATCH(req("PATCH", "/api/settings/approvals", { approvalExpiryHours: 48 }))).status).toBe(403);
     }
     const cross = await fetchCrossSite(users.adminA);
     expect(cross.status).toBe(403);
@@ -196,7 +199,7 @@ describe("maintenance windows", () => {
     expect(overlap.status).toBe(400);
 
     // A pending change request uses the window → schedule locked, delete refused
-    const maker = await prisma.user.create({ data: { upn: "maker@pg", name: "m", role: "OPERATOR" } });
+    const maker = await prisma.user.create({ data: { upn: "maker@pg", name: "m", role: "ADMIN" } });
     await withTenant(TENANT_A, (tx) =>
       tx.changeRequest.create({ data: { tenantId: TENANT_A, title: "uses window", ringId: ringA.id, windowId: created.data.id, createdById: maker.id, status: "PENDING_APPROVAL" } }),
     );

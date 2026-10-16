@@ -9,11 +9,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Two roles, the same for our team (tenantId null) and inside every bank (docs/RUNBOOK.md §roles):
+// ADMIN = does everything in its scope (bank ADMIN is also the bank's checker), AUDITOR = read-only.
+// VIEWER / OPERATOR / APPROVER are retired: kept only because Postgres cannot drop enum values;
+// the CHECK constraint "User_role_scope" refuses them (migration 20261016140100_role_scope).
 enum UserRole {
-  VIEWER
-  OPERATOR // maker
-  APPROVER // checker
+  VIEWER // retired
+  OPERATOR // retired
+  APPROVER // retired
   ADMIN
+  AUDITOR // read-only (platform: all banks; bank: its own bank)
 }
 
 enum PatchKind {
@@ -141,7 +146,7 @@ model User {
   id                 String    @id @default(cuid())
   upn                String    @unique // login name (email-style), lower-case
   name               String
-  role               UserRole  @default(VIEWER)
+  role               UserRole  @default(AUDITOR)
   // null = our team (sees all banks); otherwise the user's bank (sees only that bank)
   tenantId           String?
   // ---- Local login (password + TOTP) ----

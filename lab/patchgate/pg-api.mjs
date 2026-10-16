@@ -1,4 +1,5 @@
-// Lab-only client for PatchGate's REAL HTTP API, signed in as a lab user with password + TOTP.
+// Lab-only client for PatchGate's REAL HTTP API, signed in as a lab user with password (+ TOTP when the
+// server runs AUTH_MFA=required; with AUTH_MFA=off — the lab default — the password step already signs in).
 // Credentials live in lab/patchgate/lab-users.json (gitignored, written by users.sh); the TOTP secret is
 // captured at the user's first sign-in (enrolment) and stored there too, so scripts and the Playwright
 // lab tests can produce codes. Sessions are cached in lab/patchgate/.sessions.json (gitignored).
@@ -93,7 +94,27 @@ async function raw(jar, method, path, body) {
   return { status: res.status, json };
 }
 
-/** Sign in with password + TOTP (enrolling the authenticator on first use). Returns the cookie jar. */
+function saveSession(upn, jar) {
+  const s = readJson(SESSIONS, {});
+  s[upn] = jar;
+  writeJson(SESSIONS, s);
+  return jar;
+}
+
+/** The server's second-factor mode from /api/health: "required" | "off" | "n/a" (null if unreachable). */
+export async function serverMfa() {
+  try {
+    const r = await fetch(BASE + "/api/health");
+    return (await r.json()).mfa ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sign in: password, then (AUTH_MFA=required) the TOTP code — enrolling the authenticator on first use.
+ * With AUTH_MFA=off the password step returns "done" and no code is involved. Returns the cookie jar.
+ */
 export async function login(upn) {
   const users = readJson(USERS, { users: {} });
   const u = users.users[upn];
@@ -102,18 +123,15 @@ export async function login(upn) {
     const jar = {};
     const p = await raw(jar, "POST", "/api/auth/password", { upn, password: u.password, returnTo: "/" });
     if (!p.json.success) throw new Error(`password step for ${upn}: ${p.status} ${p.json.error}`);
+    if (p.json.data.step === "done") return saveSession(upn, jar); // AUTH_MFA=off: password only
+    if (p.json.data.step === "change-password") throw new Error(`${upn} must change the password first`);
     if (p.json.data.step === "enroll") {
       const all = readJson(USERS, { users: {} });
       all.users[upn].totpSecret = p.json.data.secret.replace(/\s/g, "");
       writeJson(USERS, all);
     }
     const t = await raw(jar, "POST", "/api/auth/totp", { code: await freshCode(upn) });
-    if (t.json.success && t.json.data.step === "done") {
-      const s = readJson(SESSIONS, {});
-      s[upn] = jar;
-      writeJson(SESSIONS, s);
-      return jar;
-    }
+    if (t.json.success && t.json.data.step === "done") return saveSession(upn, jar);
     if (t.json.success && t.json.data.step === "change-password") throw new Error(`${upn} must change the password first`);
     console.error(`totp step for ${upn}: ${t.status} ${t.json.error} — retrying`);
   }

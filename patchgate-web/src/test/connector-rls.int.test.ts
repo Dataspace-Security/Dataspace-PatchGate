@@ -129,8 +129,8 @@ describe("connector tables under FORCED row-level security", () => {
     await admin.tenantApp.create({ data: { tenantId: TENANT_A, appId: app.id, enabledBy: "admin@pg" } });
     const ring = await admin.ring.create({ data: { tenantId: TENANT_A, name: "R0", wsusGroup: "R0", order: 0 } });
     await admin.endpoint.update({ where: { id: ep.id }, data: { ringId: ring.id } });
-    const maker = sessionUserOf(await admin.user.create({ data: { upn: "op@pg", name: "Op", role: "OPERATOR" } }));
-    const checker = sessionUserOf(await admin.user.create({ data: { upn: "ap@a", name: "Ap", role: "APPROVER", tenantId: TENANT_A } }));
+    const maker = sessionUserOf(await admin.user.create({ data: { upn: "op@pg", name: "Op", role: "ADMIN" } }));
+    const checker = sessionUserOf(await admin.user.create({ data: { upn: "ap@a", name: "Ap", role: "ADMIN", tenantId: TENANT_A } }));
     const cr = await createChangeRequest(maker, TENANT_A, { title: "7-Zip", ringId: ring.id, patchIds: [patch.id] });
     await applyAction(maker, TENANT_A, cr.id, "submit");
     await applyAction(checker, TENANT_A, cr.id, "approve");

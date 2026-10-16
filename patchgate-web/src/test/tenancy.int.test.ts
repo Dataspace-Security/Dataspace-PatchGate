@@ -8,7 +8,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TENANT_A, TENANT_B, asSessionUser, configureTestEnv, resetDb } from "./helpers";
 
-type TestUser = { id: string; role: "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN"; upn: string; name: string; tenantId: string | null };
+type TestUser = { id: string; role: import("@/lib/auth/roles").Role; upn: string; name: string; tenantId: string | null };
 
 // Request context stand-ins: the signed-in user and the browser's pg_tenant cookie.
 const ctx = vi.hoisted(() => ({
@@ -74,10 +74,10 @@ async function seed() {
   const mk = (upn: string, role: TestUser["role"], tenantId: string | null) =>
     prisma.user.create({ data: { upn, name: upn, role, tenantId } }).then(asSessionUser);
   const users = {
-    platformOperator: await mk("operator@pg", "OPERATOR", null),
+    platformOperator: await mk("operator@pg", "ADMIN", null),
     platformAdmin: await mk("admin@pg", "ADMIN", null),
-    approverA: await mk("approver@a", "APPROVER", TENANT_A),
-    approverB: await mk("approver@b", "APPROVER", TENANT_B),
+    approverA: await mk("approver@a", "ADMIN", TENANT_A),
+    approverB: await mk("approver@b", "ADMIN", TENANT_B),
     adminB: await mk("admin@b", "ADMIN", TENANT_B),
   };
   const patch = await prisma.patch.create({

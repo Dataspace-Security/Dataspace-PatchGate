@@ -1,26 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { claimAt, parseRoleMap, roleFromClaims, safeReturnTo, sessionIsLive, shouldTouch, stringClaim } from "./claims";
 
-const MAP = parseRoleMap("PatchGate.Viewer=VIEWER; PatchGate.Operator=OPERATOR; PatchGate.Approver=APPROVER; PatchGate.Admin=admin");
+const MAP = parseRoleMap("PatchGate.Auditor=AUDITOR; PatchGate.ReadOnly=auditor; PatchGate.Admin=admin");
 
 describe("parseRoleMap", () => {
   it("parses entries (case-insensitive roles, ; or newline separated, = inside keys)", () => {
     expect(MAP.get("PatchGate.Admin")).toBe("ADMIN");
-    expect(parseRoleMap("CN=PG-Approvers,OU=Groups=APPROVER\nabc=VIEWER").get("CN=PG-Approvers,OU=Groups")).toBe("APPROVER");
+    expect(parseRoleMap("CN=PG-Admins,OU=Groups=ADMIN\nabc=AUDITOR").get("CN=PG-Admins,OU=Groups")).toBe("ADMIN");
+    expect(MAP.get("PatchGate.ReadOnly")).toBe("AUDITOR");
   });
   it.each(["", "  ;  ", "PatchGate.Admin=ROOT", "=ADMIN", "NoEquals"])("rejects %j", (spec) => {
     expect(() => parseRoleMap(spec)).toThrow();
+  });
+  it.each(["G=VIEWER", "G=OPERATOR", "G=APPROVER", "PatchGate.Admin=ADMIN; G=APPROVER"])("rejects the retired role in %j (both user scopes)", (spec) => {
+    expect(() => parseRoleMap(spec)).toThrow(/roles: ADMIN, AUDITOR/);
   });
 });
 
 describe("roleFromClaims", () => {
   it("picks the highest mapped role", () => {
-    expect(roleFromClaims({ roles: ["PatchGate.Operator", "PatchGate.Approver"] }, "roles", MAP)).toBe("APPROVER");
-    expect(roleFromClaims({ roles: ["Other", "PatchGate.Viewer"] }, "roles", MAP)).toBe("VIEWER");
+    expect(roleFromClaims({ roles: ["PatchGate.Auditor", "PatchGate.Admin"] }, "roles", MAP)).toBe("ADMIN");
+    expect(roleFromClaims({ roles: ["Other", "PatchGate.Auditor"] }, "roles", MAP)).toBe("AUDITOR");
   });
   it("reads nested claims (Keycloak realm roles) and single strings", () => {
     expect(roleFromClaims({ realm_access: { roles: ["PatchGate.Admin"] } }, "realm_access.roles", MAP)).toBe("ADMIN");
-    expect(roleFromClaims({ role: "PatchGate.Operator" }, "role", MAP)).toBe("OPERATOR");
+    expect(roleFromClaims({ role: "PatchGate.Auditor" }, "role", MAP)).toBe("AUDITOR");
   });
   it("returns null when nothing maps (no access)", () => {
     expect(roleFromClaims({ roles: ["Finance.Users"] }, "roles", MAP)).toBeNull();

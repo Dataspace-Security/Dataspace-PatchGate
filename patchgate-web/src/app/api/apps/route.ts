@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { getCurrentUser, requireRole, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { handle, ok } from "@/lib/api/response";
 import { appendAudit } from "@/lib/audit/service";
 import { DomainError } from "@/lib/errors";
@@ -49,7 +49,7 @@ export async function POST(req: Request): Promise<Response> {
   return handle(async () => {
     requireSameOrigin(req);
     const user = await getCurrentUser();
-    requireRole(user, ["ADMIN"]);
+    requireWriter(user);
     requirePlatformAdmin(user);
     const input = appSchema.parse(await req.json());
     if (await prisma.app.findUnique({ where: { wingetId: input.wingetId } })) {

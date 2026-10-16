@@ -156,8 +156,8 @@ describe("audit under RLS", () => {
 
 describe("worker tick under RLS", () => {
   async function approvedChangeRequest() {
-    const maker = asSessionUser(await admin.user.create({ data: { upn: "op@pg", name: "Op", role: "OPERATOR" } }));
-    const checker = asSessionUser(await admin.user.create({ data: { upn: "ap@a", name: "Ap", role: "APPROVER", tenantId: TENANT_A } }));
+    const maker = asSessionUser(await admin.user.create({ data: { upn: "op@pg", name: "Op", role: "ADMIN" } }));
+    const checker = asSessionUser(await admin.user.create({ data: { upn: "ap@a", name: "Ap", role: "ADMIN", tenantId: TENANT_A } }));
     const ring = await admin.ring.create({ data: { tenantId: TENANT_A, name: "R0", wsusGroup: "R0", order: 0 } });
     const ep = await admin.endpoint.create({ data: { tenantId: TENANT_A, tacticalAgentId: "agentAppRole01", hostname: "PC", ringId: ring.id } });
     const patch = await admin.patch.create({ data: { kind: "WINDOWS", externalId: GUID, kb: "KB3", title: "KB3", severity: "CRITICAL" } });

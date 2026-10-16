@@ -6,6 +6,7 @@ import { authMode, env } from "@/lib/env";
 import { sessionIsLive, shouldTouch } from "./claims";
 import { SESSION_COOKIE, sha256Hex } from "./tokens";
 import type { Actor } from "@/lib/approvals/state-machine";
+import { canRead, canWrite } from "./roles";
 
 export class AuthError extends Error {
   constructor(
@@ -64,8 +65,17 @@ async function userFromSession(idleMinutes: number): Promise<SessionUser> {
   return { id: s.user.id, role: s.user.role, upn: s.user.upn, name: s.user.name, tenantId: s.user.tenantId };
 }
 
-export function requireRole(user: SessionUser, roles: readonly Actor["role"][]): void {
-  if (!roles.includes(user.role)) throw new AuthError("Insufficient role", 403);
+/**
+ * Gate for every user-initiated change (POST/PATCH/PUT/DELETE): ADMIN only. Auditors (read-only) and the
+ * retired roles get 403 — the only writes an auditor may make are its own password / sessions / sign-out.
+ */
+export function requireWriter(user: SessionUser): void {
+  if (!canWrite(user)) throw new AuthError("Read-only account: auditors cannot change anything", 403);
+}
+
+/** Gate for reads of the user's scope: ADMIN or AUDITOR (retired roles have no access). */
+export function requireReader(user: SessionUser): void {
+  if (!canRead(user)) throw new AuthError("Insufficient role", 403);
 }
 
 /**

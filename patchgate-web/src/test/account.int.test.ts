@@ -28,7 +28,7 @@ interface Fixture {
 
 async function seedUser(tenantId: string | null, upn = "alice@bank-b.test"): Promise<Fixture> {
   const u = await prisma.user.create({
-    data: { upn, name: "Alice", role: "APPROVER", tenantId, passwordHash: await hashPassword(STRONG), totpEnabled: true, lastLoginAt: T0 },
+    data: { upn, name: "Alice", role: "ADMIN", tenantId, passwordHash: await hashPassword(STRONG), totpEnabled: true, lastLoginAt: T0 },
   });
   const tokens = await prisma.$transaction(async (tx) => {
     const out: string[] = [];
@@ -146,7 +146,7 @@ describe("sign out of all other sessions", () => {
   it("overview lists live sessions and marks the current one", async () => {
     const f = await seedUser(TENANT_B);
     const o = await getAccountOverview(f.userId, f.current, 15, T0);
-    expect(o).toMatchObject({ upn: "alice@bank-b.test", role: "APPROVER", bankName: "Demo Bank B", hasPassword: true });
+    expect(o).toMatchObject({ upn: "alice@bank-b.test", role: "ADMIN", bankName: "Demo Bank B", hasPassword: true });
     expect(o?.sessions).toHaveLength(3);
     expect(o?.sessions.filter((s) => s.current)).toHaveLength(1);
     // Idle sessions are not shown.

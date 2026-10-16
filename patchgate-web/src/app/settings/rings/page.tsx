@@ -3,18 +3,19 @@ import { withTenant } from "@/lib/tenancy";
 import { listRings } from "@/lib/policies/rings";
 import { REBOOT_LABEL } from "@/lib/policies/reboot-labels";
 import { Badge, Loading, PageHeader, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
-import { SettingsTabs, getSettingsContext } from "../settings-shell";
+import { isPlatformReader } from "@/lib/auth/roles";
+import { ReadOnlyNotice, SettingsTabs, getSettingsContext } from "../settings-shell";
 import { BulkAssignPanel, CreateRingForm, RingRowActions } from "./ring-forms";
 
 async function Rings() {
-  const { user, tenant, denied } = await getSettingsContext();
+  const { user, tenant, denied, readOnly } = await getSettingsContext();
   const header = (
     <>
       <PageHeader
         title="Rollout rings"
         description={`Rings of ${tenant.name}, in rollout order (test first). A ring can be deleted only when it has no endpoints and no change requests.`}
       />
-      <SettingsTabs active="rings" platformAdmin={user.tenantId === null && user.role === "ADMIN"} />
+      <SettingsTabs active="rings" platformAdmin={isPlatformReader(user)} />
     </>
   );
   if (denied) return <>{header}{denied}</>;
@@ -29,7 +30,7 @@ async function Rings() {
     <>
       {header}
       <div className="space-y-6">
-        <CreateRingForm />
+        {readOnly ? <ReadOnlyNotice /> : <CreateRingForm />}
         <div className={tableWrapCls}>
           <table className={tableCls}>
             <thead className={theadCls}>
@@ -41,7 +42,7 @@ async function Rings() {
                 <th className="text-right">Endpoints</th>
                 <th className="text-right">Windows</th>
                 <th className="text-right">Change requests</th>
-                <th className="text-right">Actions</th>
+                {!readOnly && <th className="text-right">Actions</th>}
               </tr>
             </thead>
             <tbody>
@@ -54,19 +55,21 @@ async function Rings() {
                   <td className="text-right tabular-nums">{r._count.endpoints}</td>
                   <td className="text-right tabular-nums">{r._count.windows}</td>
                   <td className="text-right tabular-nums">{r._count.changeRequests}</td>
-                  <td className="text-right">
-                    <RingRowActions
-                      ring={{ id: r.id, name: r.name, wsusGroup: r.wsusGroup, rebootPolicy: r.rebootPolicy, deletable: r._count.endpoints === 0 && r._count.changeRequests === 0 }}
-                      order={rings.map((x) => x.id)}
-                      index={i}
-                    />
-                  </td>
+                  {!readOnly && (
+                    <td className="text-right">
+                      <RingRowActions
+                        ring={{ id: r.id, name: r.name, wsusGroup: r.wsusGroup, rebootPolicy: r.rebootPolicy, deletable: r._count.endpoints === 0 && r._count.changeRequests === 0 }}
+                        order={rings.map((x) => x.id)}
+                        index={i}
+                      />
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <BulkAssignPanel rings={ringOptions} sites={sites.flatMap((s) => (s.site ? [s.site] : []))} />
+        {!readOnly && <BulkAssignPanel rings={ringOptions} sites={sites.flatMap((s) => (s.site ? [s.site] : []))} />}
       </div>
     </>
   );

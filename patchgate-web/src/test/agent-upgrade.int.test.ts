@@ -53,8 +53,8 @@ describe("Tactical agent upgrade via change request", () => {
     expect(patch).toMatchObject({ kind: "AGENT_UPGRADE", agentVersion: "2.11.0" });
 
     const [maker, checker] = await Promise.all([
-      prisma.user.create({ data: { upn: "m@t", name: "M", role: "OPERATOR" } }),
-      prisma.user.create({ data: { upn: "c@t", name: "C", role: "APPROVER", tenantId: TENANT_A } }),
+      prisma.user.create({ data: { upn: "m@t", name: "M", role: "ADMIN" } }),
+      prisma.user.create({ data: { upn: "c@t", name: "C", role: "ADMIN", tenantId: TENANT_A } }),
     ]);
     const ring = await prisma.ring.create({ data: { tenantId: TENANT_A, name: "R0", wsusGroup: "R0", order: 0 } });
     const ep = await prisma.endpoint.create({
@@ -92,7 +92,7 @@ describe("Tactical agent upgrade via change request", () => {
     await mirror("2.12.0", "amd64", "PENDING");
     await prisma.patch.create({ data: { kind: "AGENT_UPGRADE", externalId: "tactical-agent@2.12.0", title: "Agent 2.12.0", agentVersion: "2.12.0" } });
     const p = await prisma.patch.findUniqueOrThrow({ where: { externalId: "tactical-agent@2.12.0" } });
-    const maker = await prisma.user.create({ data: { upn: "m@t", name: "M", role: "OPERATOR" } });
+    const maker = await prisma.user.create({ data: { upn: "m@t", name: "M", role: "ADMIN" } });
     const ring = await prisma.ring.create({ data: { tenantId: TENANT_A, name: "R0", wsusGroup: "R0", order: 0 } });
     await expect(
       createChangeRequest(asSessionUser(maker), TENANT_A, { title: "x", ringId: ring.id, patchIds: [p.id] }),

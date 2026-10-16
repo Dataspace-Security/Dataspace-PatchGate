@@ -1,4 +1,4 @@
-import { getCurrentUser, requireRole, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { fail, handle, ok } from "@/lib/api/response";
 import { setTenantAppEnabled } from "@/lib/thirdparty/tenant-apps";
 import { requireTenant } from "@/lib/tenancy";
@@ -11,7 +11,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string; ac
     if (action !== "enable" && action !== "disable") return fail("Unknown action", 404);
     requireSameOrigin(req);
     const user = await getCurrentUser();
-    requireRole(user, ["ADMIN"]);
+    requireWriter(user);
     const tenantId = await requireTenant(user);
     return ok(await setTenantAppEnabled(tenantId, id, action === "enable", user.upn));
   });

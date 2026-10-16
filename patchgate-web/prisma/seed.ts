@@ -13,15 +13,18 @@ const prisma = new PrismaClient();
 const DEFAULT_BANK = { id: "tenant-default", slug: "default", name: "Default bank" };
 const BANK_B = { id: "tenant-bank-b", slug: "bank-b", name: "Demo Bank B" };
 
-type Role = "VIEWER" | "OPERATOR" | "APPROVER" | "ADMIN";
+// Two roles everywhere (src/lib/auth/roles.ts). The historic UPNs are kept for the dev switcher / e2e:
+// operator@ = a second platform admin (maker), approver@ = bank admins (checkers), viewer@ = bank auditor.
+type Role = "ADMIN" | "AUDITOR";
 
 async function seedUsers(): Promise<void> {
   const users: { upn: string; name: string; role: Role; tenantId: string | null }[] = [
     { upn: "admin@dev.local", name: "Dev Admin", role: "ADMIN", tenantId: null },
-    { upn: "operator@dev.local", name: "Dev Operator", role: "OPERATOR", tenantId: null },
-    { upn: "approver@dev.local", name: "Dev Approver", role: "APPROVER", tenantId: DEFAULT_BANK.id },
-    { upn: "viewer@dev.local", name: "Dev Viewer", role: "VIEWER", tenantId: DEFAULT_BANK.id },
-    { upn: "approver@bankb.local", name: "Bank B Approver", role: "APPROVER", tenantId: BANK_B.id },
+    { upn: "operator@dev.local", name: "Dev Maker (platform admin)", role: "ADMIN", tenantId: null },
+    { upn: "auditor@dev.local", name: "Dev Platform Auditor", role: "AUDITOR", tenantId: null },
+    { upn: "approver@dev.local", name: "Dev Bank Admin (checker)", role: "ADMIN", tenantId: DEFAULT_BANK.id },
+    { upn: "viewer@dev.local", name: "Dev Bank Auditor", role: "AUDITOR", tenantId: DEFAULT_BANK.id },
+    { upn: "approver@bankb.local", name: "Bank B Admin (checker)", role: "ADMIN", tenantId: BANK_B.id },
   ];
   for (const u of users) {
     await prisma.user.upsert({ where: { upn: u.upn }, create: u, update: { role: u.role, tenantId: u.tenantId } });

@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { getPageUser } from "@/lib/auth/page-user";
 import { AuthError } from "@/lib/auth/session";
+import { MFA_OFF_WARNING } from "@/lib/auth/mfa-status";
+import { mfaDisabled } from "@/lib/env";
 import { loadOperations, parseFilter, parsePage } from "@/lib/metrics/operations";
 import { Alert, Loading, PageHeader, fmtDate } from "@/components/ui";
 import { BankTable } from "./bank-table";
@@ -28,6 +30,11 @@ async function OperationsContent({ searchParams }: { searchParams: SearchParams 
   const s = view.snapshot;
   return (
     <div className="space-y-6">
+      {mfaDisabled() && (
+        <Alert tone="warn">
+          <span data-testid="operations-mfa-off">{MFA_OFF_WARNING}</span> Sign-in currently asks for the password only (<span className="font-mono">/api/health</span> reports <span className="font-mono">mfa: &quot;off&quot;</span>).
+        </Alert>
+      )}
       {s.errors.length > 0 && (
         <Alert tone="warn">
           Some figures could not be refreshed ({s.errors.join(", ")}); the rest is current. Details are in the web log (

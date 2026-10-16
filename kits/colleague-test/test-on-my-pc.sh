@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # PatchGate colleague test kit — the WHOLE system on one PC with ONE command (TEST SETUP ONLY).
 #
-#   ./test-on-my-pc.sh              install everything (about 25-40 minutes), or resume an interrupted run
+#   ./test-on-my-pc.sh              install everything (about 30-90 minutes), or resume an interrupted run
 #   ./test-on-my-pc.sh --status     containers, URL, connector health
-#   ./test-on-my-pc.sh --code WHO   current 6-digit sign-in code (WHO: platform-admin|operator|bank-admin|approver)
+#   ./test-on-my-pc.sh --code WHO   current 6-digit sign-in code (WHO: an account key from KIT_USERS, e.g. approver)
+#   ./test-on-my-pc.sh --reinstall  erase ONLY this kit (label-checked, asks first; --yes skips) and install fresh
 #   ./test-on-my-pc.sh --cleanup    remove ONLY this kit's containers, network and volumes (logs are kept)
 #
 # Two privileged Ubuntu 24.04 containers stand in for two VMs: "pgkit-server" (the PatchGate server, installed
@@ -15,13 +16,36 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'   # Git Bash: never rewrite container paths like /root/kit
 
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="$(tr -d '\r\n' < "$KIT/VERSION")"
+VERSION="unknown"; [ -f "$KIT/VERSION" ] && VERSION="$(tr -d '\r\n' < "$KIT/VERSION")"
 LABEL="com.patchgate.kit=colleague-test"
 SERVER=pgkit-server; SITE=pgkit-site; NET=pgkit-net
 VOL_SERVER=pgkit-server-docker; VOL_SITE=pgkit-site-docker
 BASE_IMAGE="ubuntu:24.04"
 DOMAIN="patchgate.pgi.test"
 SITE_DOMAIN="test-bank.pgi.test"
+
+# ------------------------------------------------------------------ test bank + accounts (THE one place to change)
+# key | sign-in name | display name | role | platform|bank | what it is for
+# The FIRST entry must be the platform ADMIN: the server installer creates it; the others are created through
+# Administration -> Users (real API) and the kit completes their first sign-in (new password + authenticator).
+KIT_BANK="test-bank|Test Bank"                     # slug | name
+KIT_USERS=(   # PatchGate 1.0.0-rc3 role model (platform ADMIN; bank ADMIN / APPROVER / VIEWER)
+  "platform-admin|admin@pgi.test|Platform Admin|ADMIN|platform|our team's administrator (all banks); maker of the test change request"
+  "bank-admin|admin@test-bank.test|Test Bank Admin|ADMIN|bank|Test Bank's administrator (sees and manages only Test Bank)"
+  "approver|approver@test-bank.test|Test Bank Approver|APPROVER|bank|Test Bank's approver (checker: every change needs the bank's yes)"
+  "viewer|viewer@test-bank.test|Test Bank Viewer|VIEWER|bank|Test Bank read-only user"
+)
+# rc4 role model (ADMIN + AUDITOR everywhere; bank ADMINs approve) — swap in when testing rc4:
+#   "platform-admin|admin@pgi.test|Platform Admin|ADMIN|platform|..."
+#   "bank-admin|admin@test-bank.test|Test Bank Admin 1|ADMIN|bank|maker or checker"
+#   "approver|admin2@test-bank.test|Test Bank Admin 2|ADMIN|bank|checker"
+#   "auditor|auditor@test-bank.test|Test Bank Auditor|AUDITOR|bank|read-only"
+KIT_CHECK_LOGIN="approver"     # account whose sign-in is verified through the API at the end
+user_keys() { local u; for u in "${KIT_USERS[@]}"; do printf '%s ' "${u%%|*}"; done; }
+user_field() { # key field-number(2=upn,3=name,4=role)
+  local u; for u in "${KIT_USERS[@]}"; do [ "${u%%|*}" = "$1" ] && { printf '%s' "$u" | cut -d'|' -f"$2"; return; }; done
+}
+users_conf() { echo "BANK|$KIT_BANK"; printf '%s\n' "${KIT_USERS[@]}"; }
 SUBNETS=(172.33.0.0/24 172.34.0.0/24 172.35.0.0/24 172.36.0.0/24 172.37.0.0/24 10.233.33.0/24 10.234.34.0/24)
 PORTS=(443 9443 10443 11443 12443 13443 8444)
 LOGS="$KIT/logs"
@@ -53,6 +77,8 @@ die()  { printf '\n%sFAILED%s %s\n' "$R" "$N" "$*" >&2; printf '       Log: %s\n
 hostpath() { # local path -> a form docker.exe understands (Git Bash: D:/x/y; Linux: unchanged)
   if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
 }
+# Windows curl (Schannel) cannot check revocation for a private test CA: skip only that check.
+CURL_OPTS=(); if curl -V 2>/dev/null | head -1 | grep -qi schannel; then CURL_OPTS=(--ssl-no-revoke); fi
 dx() { docker exec "$@"; }
 in_server() { docker exec -e KIT_DOMAIN="$DOMAIN" "$SERVER" bash /root/kit/lib/server-steps.sh "$@"; }
 in_site() { docker exec -e KIT_DOMAIN="$DOMAIN" -e KIT_SITE_DOMAIN="$SITE_DOMAIN" "$SITE" bash /root/kit/lib/site-steps.sh "$@"; }
@@ -67,26 +93,65 @@ save_state() {
 }
 url_port() { [ "${HOST_PORT:-443}" = 443 ] && printf '' || printf ':%s' "$HOST_PORT"; }
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
 
-# ------------------------------------------------------------------ --cleanup
+# ------------------------------------------------------------------ --cleanup / --reinstall
+LABEL_KEY="${LABEL%%=*}"; LABEL_VAL="${LABEL#*=}"
+has_label() { # kind id -> 0 only if the object really carries the kit label (never trust the filter alone)
+  [ "$(docker "$1" inspect -f "{{index .Labels \"$LABEL_KEY\"}}" "$2" 2>/dev/null || true)" = "$LABEL_VAL" ] && return 0
+  [ "$1" = container ] && [ "$(docker inspect -f "{{index .Config.Labels \"$LABEL_KEY\"}}" "$2" 2>/dev/null || true)" = "$LABEL_VAL" ]
+}
+kit_objects() { # prints "kind name" for every kit object (label verified)
+  local id
+  for id in $(docker ps -aq --filter "label=$LABEL"); do has_label container "$id" && echo "container $(docker inspect -f "{{.Name}}" "$id" | tr -d /)"; done
+  for id in $(docker network ls -q --filter "label=$LABEL"); do has_label network "$id" && echo "network $(docker network inspect -f "{{.Name}}" "$id")"; done
+  for id in $(docker volume ls -q --filter "label=$LABEL"); do has_label volume "$id" && echo "volume $id"; done
+  return 0
+}
+confirm_erase() { # $1 = what happens next
+  local objs; objs="$(kit_objects)"
+  if [ -z "$objs" ]; then echo "No PatchGate test kit objects on this PC (label $LABEL)."; return 0; fi
+  echo "${B}This removes ONLY the PatchGate test kit (every object below carries the label $LABEL):${N}"
+  printf "%s
+" "$objs" | sed "s/^/    /"
+  echo "    + logins.txt and patchgate-test-ca.pem in $KIT (logs/ are kept)"
+  echo "Nothing else is touched (other containers, networks, volumes and images stay as they are). $1"
+  [ "$ASSUME_YES" = 1 ] && return 0
+  [ -t 0 ] || die "not a terminal: add --yes to confirm"
+  printf "Erase it? [y/N]: "; local a=""; read -r a || true
+  case "$a" in [Yy]*) return 0 ;; *) echo "Nothing removed."; exit 0 ;; esac
+}
 do_cleanup() {
   echo "${B}Removing the PatchGate test kit (label $LABEL) — nothing else is touched${N}"
-  local ids
-  ids="$(docker ps -aq --filter "label=$LABEL")"
-  if [ -n "$ids" ]; then
-    docker ps -a --filter "label=$LABEL" --format '    container {{.Names}}'
-    # shellcheck disable=SC2086
-    docker rm -f $ids >/dev/null
-  fi
+  local c n
+  for c in $(docker ps -aq --filter "label=$LABEL"); do
+    has_label container "$c" || continue
+    n="$(docker inspect -f "{{.Name}}" "$c" | tr -d /)"
+    echo "    container $n (stopping its inner Docker first; can take a few minutes)"
+    if running "$c"; then
+      # The inner stacks (PatchGate / Tactical) shut down cleanly first: a privileged container with a busy
+      # inner dockerd may otherwise not die on SIGKILL in time ("did not receive an exit event").
+      docker exec "$c" sh -c "command -v docker >/dev/null 2>&1 && docker ps -q | xargs -r docker stop -t 10 >/dev/null 2>&1; pkill dockerd; sleep 5" >/dev/null 2>&1 || true
+      docker stop -t 30 "$c" >/dev/null 2>&1 || true
+    fi
+    for _ in 1 2 3 4 5 6; do
+      docker rm -f "$c" >/dev/null 2>&1 && break
+      exists "$c" || break
+      sleep 15
+    done
+    exists "$c" && die "could not remove $n yet (Docker is still stopping it): run the command again in a minute"
+  done
   docker network ls -q --filter "label=$LABEL" | while read -r n; do
+    has_label network "$n" || continue
     echo "    network $(docker network inspect -f '{{.Name}}' "$n")"; docker network rm "$n" >/dev/null
   done
   docker volume ls -q --filter "label=$LABEL" | while read -r v; do
+    has_label volume "$v" || continue
     echo "    volume $v"; docker volume rm "$v" >/dev/null
   done
   rm -f "$STATE"
   [ -f "$LOGINS" ] && { rm -f "$LOGINS"; echo "    logins.txt (its accounts no longer exist)"; }
+  [ -f "$CA_OUT" ] && { rm -f "$CA_OUT"; echo "    $(basename "$CA_OUT") (remove it from your certificate store too if you imported it)"; }
   echo "    kept: logs in $LOGS"
   echo
   echo "If you added the hosts entry, remove it again (PowerShell as Administrator):"
@@ -105,13 +170,14 @@ do_status() {
     echo; echo "  PatchGate server stack:"; in_server ps 2>/dev/null | sed 's/^/    /' || true
     echo; echo "  Connector (server view: name | status | last seen | online):"
     in_server connector-status 2>/dev/null | sed 's/^/    /' || echo "    (database not reachable)"
+    echo "  Test SIEM (audit export): $(in_server siem-status 2>/dev/null || echo unknown)"
   fi
   if running "$SITE" && dx "$SITE" sh -c 'docker inspect pg-site-connector >/dev/null 2>&1'; then
     echo; echo "  Connector self-check (site view):"; in_site check || true
   fi
   if [ -n "${HOST_PORT:-}" ]; then
     echo; echo "  URL: https://$DOMAIN$(url_port)/   (needs the hosts line 127.0.0.1 $DOMAIN, see START-HERE.md)"
-    local code; code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --cacert "$CA_OUT" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/login" 2>/dev/null || true)"
+    local code; code="$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 10 --cacert "$CA_OUT" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/login" 2>/dev/null || true)"
     echo "  From this PC: https://$DOMAIN$(url_port)/login -> HTTP ${code:-none}"
     [ -f "$LOGINS" ] && echo "  Accounts: $LOGINS"
   fi
@@ -213,6 +279,7 @@ containers() {
   # Refresh the kit scripts on resume (harmless on the first run).
   docker cp "$(hostpath "$KIT/lib")/." "$SERVER:/root/kit/lib/"
   docker cp "$(hostpath "$KIT/lib")/." "$SITE:/root/kit/lib/"
+  users_conf | docker exec -i "$SERVER" sh -c 'cat > /root/kit/users.conf'
 }
 
 server_docker() {
@@ -223,13 +290,14 @@ server_docker() {
 }
 
 server_images() {
-  step "PatchGate $VERSION images -> server (docker load from the kit)"
-  if is_done "$SERVER" images; then ok "already loaded"; return; fi
+  step "PatchGate $VERSION release images -> server, test SIEM (stand-in for the platform SIEM)"
+  if is_done "$SERVER" images; then ok "already done"; return; fi
   info "copying $(du -sh "$KIT/images" | cut -f1) of image archives into $SERVER"
   dx "$SERVER" mkdir -p /root/kit/images /root/kit/product /root/kit/site-bundle
   docker cp "$(hostpath "$KIT/images")/." "$SERVER:/root/kit/images/"
-  in_server load-images || die "docker load failed"
-  mark_done "$SERVER" images; ok "6 images loaded (web, tools, signer, egress-proxy, backup, connector)"
+  in_server prep-images || die "loading the tools image failed"
+  in_server siem "$SERVER_IP" || die "starting the test SIEM failed"
+  mark_done "$SERVER" images; ok "image archives in the server; test SIEM listening"
 }
 
 server_install() {
@@ -237,9 +305,10 @@ server_install() {
   if is_done "$SERVER" install; then ok "already installed"; return; fi
   docker cp "$(hostpath "$KIT/product")/." "$SERVER:/root/kit/product/"
   local rc=0
-  in_server install || rc=$?
+  in_server install "$SERVER_IP" || rc=$?
   [ "$rc" = 0 ] || die "server installer exited with $rc (see above; full log inside: docker exec $SERVER cat /var/log/patchgate-install.log)"
   dx "$SERVER" test -s /root/kit/secret/admin-temp-password || die "the installer's one-time admin password was not captured"
+  in_server images || die "a release image is missing after the install"
   docker cp "$SERVER:/opt/patchgate/deploy/tls/selfsigned-ca.pem" "$(hostpath "$CA_OUT")"
   mark_done "$SERVER" install; ok "server installed; test CA saved to $(basename "$CA_OUT")"
 }
@@ -309,8 +378,8 @@ smoke_and_host() {
   if [ "$rc" = 0 ]; then ok "smoke test PASS"; else warn "smoke test reported $rc failed check(s) (see above)"; fi
   SMOKE_RC=$rc
   local code1 code2
-  code1="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$CA_OUT" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/api/health" || true)"
-  code2="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$CA_OUT" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/login" || true)"
+  code1="$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$CA_OUT" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/api/health" || true)"
+  code2="$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$CA_OUT" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/login" || true)"
   if [ "$code2" = 200 ]; then ok "from this PC: https://$DOMAIN$(url_port)/login -> 200, /api/health -> $code1 (certificate verified with $(basename "$CA_OUT"))"
   else warn "from this PC: /login -> ${code2:-no answer}, /api/health -> ${code1:-no answer}"; fi
   HOST_LOGIN=$code2
@@ -324,7 +393,7 @@ write_logins() {
     echo "URL: https://$DOMAIN$(url_port)/      (hosts line needed: 127.0.0.1 $DOMAIN - see START-HERE.md)"
     echo
     echo "Every account signs in with password + 6-digit authenticator code. Either:"
-    echo "  - get the current code:   ./test-on-my-pc.sh --code approver      (platform-admin | operator | bank-admin | approver)"
+    echo "  - get the current code:   ./test-on-my-pc.sh --code approver      (one of: $(user_keys))"
     echo "  - or add the TOTP secret / otpauth URI below to an authenticator app (Microsoft/Google Authenticator: 'enter a setup key')."
     echo "  A code works once: wait for the next one if it is refused."
     echo
@@ -356,16 +425,18 @@ ${B}==================== PatchGate $VERSION is running on this PC (TEST SETUP) =
   2) The browser warns about the certificate (self-signed test CA): click Advanced -> Continue.
      Optional, no warning: import $(basename "$CA_OUT") into "Trusted Root Certification Authorities"
      (certmgr.msc, Current User) — remove it again after testing.
-     Without the hosts line you can still check it works: curl --cacert $(basename "$CA_OUT") --resolve $DOMAIN:$HOST_PORT:127.0.0.1 https://$DOMAIN:$HOST_PORT/login
+     Without the hosts line you can still check it works: curl ${CURL_OPTS[*]} --cacert $(basename "$CA_OUT") --resolve $DOMAIN:$HOST_PORT:127.0.0.1 https://$DOMAIN:$HOST_PORT/login
 
-  What to try:
-   a. Sign in as ${B}operator${N} (operator@pgi.test): Patches -> pick an update -> create a change request for Test Bank.
-   b. Sign in as ${B}platform-admin${N} (admin@pgi.test) and try to approve it -> refused: a Test Bank approver must
-      always approve (platform staff cannot replace the bank's decision).
-   c. Sign in as ${B}approver${N} (approver@test-bank.test) and approve it -> the change is released for the bank.
+  What to try (the kit already proved the rules once via the API: see the two "Kit check" requests):
+   a. Sign in as ${B}platform-admin${N} ($(user_field platform-admin 2)): Patches -> "TEST FIXTURE - sample Windows update"
+      (KB0000001) -> create a change request for Test Bank and submit it (you are its maker).
+   b. Still as platform-admin, try to approve it -> refused: maker and checker must differ, and a Test Bank
+      approver must always approve (our team cannot replace the bank's decision).
+   c. Sign in as ${B}approver${N} ($(user_field approver 2)) and approve it -> the change is released for the bank.
    d. Connectors page (platform-admin): site "Head office" of Test Bank is ACTIVE / online.
    e. Audit page: every sign-in, approval, enrolment and bundle download is in the bank's tamper-evident chain.
-   f. bank-admin (admin@test-bank.test): Administration -> Users shows only Test Bank's users.
+   f. ${B}bank-admin${N} ($(user_field bank-admin 2)): Administration -> Users shows only Test Bank's users;
+      ${B}viewer${N} ($(user_field viewer 2)) can look but not change anything.
 
   Status:   ./test-on-my-pc.sh --status        Clean up:  ./test-on-my-pc.sh --cleanup
   Log:      $LOG_FILE
@@ -378,34 +449,46 @@ TXT
 }
 
 # ------------------------------------------------------------------ main
-MODE=install; RESUME=0; WHO=""
+MODE=install; RESUME=0; WHO=""; ASSUME_YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --cleanup) MODE=cleanup; shift ;;
+    --reinstall|--fresh) MODE=reinstall; shift ;;
     --status) MODE=status; shift ;;
-    --code|--totp) MODE=code; WHO="${2:-}"; [ -n "$WHO" ] || die "--code needs: platform-admin | operator | bank-admin | approver"; shift 2 ;;
+    --code|--totp) MODE=code; WHO="${2:-}"; [ -n "$WHO" ] || die "--code needs one of: $(user_keys)"; shift 2 ;;
     --resume) RESUME=1; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option $1"; usage; exit 2 ;;
   esac
 done
 
 case "$MODE" in
-  cleanup) do_cleanup; exit 0 ;;
+  cleanup) confirm_erase ""; do_cleanup; exit 0 ;;
   status) do_status; exit 0 ;;
   code) do_code "$WHO"; exit 0 ;;
 esac
 
 [ -d "$KIT/images" ] && [ -d "$KIT/site-bundle" ] && [ -d "$KIT/product" ] || die "run this from the unpacked kit folder (images/, site-bundle/, product/ missing)"
-if [ -n "$(docker ps -aq --filter "label=$LABEL" 2>/dev/null)" ] && [ "$RESUME" = 0 ]; then
-  echo "The PatchGate test kit containers already exist on this PC:"
+if [ "$MODE" = reinstall ]; then
+  confirm_erase "Then everything is installed again from step 1."
+  [ -z "$(kit_objects)" ] || do_cleanup
+  echo
+elif [ -n "$(docker ps -aq --filter "label=$LABEL" 2>/dev/null)" ] && [ "$RESUME" = 0 ]; then
+  if is_done "$SERVER" complete; then
+    load_state
+    echo "PatchGate test kit: already installed (https://$DOMAIN$(url_port)/, accounts in $(basename "$LOGINS"))."
+    echo "Use --status (check it), --reinstall (erase the kit + install fresh) or --cleanup (erase the kit)."
+    exit 0
+  fi
+  echo "An unfinished PatchGate test kit installation exists on this PC:"
   docker ps -a --filter "label=$LABEL" --format '    {{.Names}}  {{.Status}}'
   if [ -t 0 ]; then
-    printf 'Resume / re-check the existing installation? [Y/n] (n = stop; start over with --cleanup first): '
+    printf 'Continue where it stopped? [Y/n] (n = stop; start over with --reinstall): '
     read -r a || a=n
-    case "${a:-y}" in [Yy]*) RESUME=1 ;; *) echo "Nothing changed. To start over: ./test-on-my-pc.sh --cleanup && ./test-on-my-pc.sh"; exit 0 ;; esac
+    case "${a:-y}" in [Yy]*) RESUME=1 ;; *) echo "Nothing changed. Start over: ./test-on-my-pc.sh --reinstall"; exit 0 ;; esac
   else
-    echo "Not a terminal: use --resume to continue, or --cleanup to start over."; exit 1
+    echo "Not a terminal: use --resume to continue, or --reinstall to start over."; exit 1
   fi
 fi
 
@@ -426,9 +509,17 @@ allowlist
 site_install
 wait_connector
 smoke_and_host
-step "Sign-in check (bank approver via the real login API) and logins.txt"
-in_server check-login approver || warn "approver sign-in check failed"
+step "Real-API checks: $KIT_CHECK_LOGIN sign-in, maker/checker + bank approval; logins.txt"
+CHECKS_OK=1
+in_server check-login "$KIT_CHECK_LOGIN" || { warn "$KIT_CHECK_LOGIN sign-in check failed"; CHECKS_OK=0; }
+if ! is_done "$SERVER" crcheck; then
+  in_server fixture "${KIT_BANK%%|*}" || { warn "adding the sample patch failed"; CHECKS_OK=0; }
+  if in_server cr-check "$KIT_CHECK_LOGIN"; then mark_done "$SERVER" crcheck; ok "approval rules enforced (maker != checker; only the bank can approve)"
+  else warn "approval-rule check failed (see above)"; CHECKS_OK=0; fi
+else ok "approval rules already checked on an earlier run"; fi
 write_logins
 ok "logins.txt written ($(wc -l < "$LOGINS") lines, mode 600)"
+if [ "${SMOKE_RC:-1}" = 0 ] && [ "${HOST_LOGIN:-}" = 200 ] && [ "$CHECKS_OK" = 1 ]; then mark_done "$SERVER" complete; RESULT=PASS; else RESULT=FAIL; fi
 summary
-[ "${SMOKE_RC:-1}" = 0 ] && [ "${HOST_LOGIN:-}" = 200 ] || exit 4
+echo "  Result: $RESULT"
+[ "$RESULT" = PASS ] || exit 4

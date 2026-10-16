@@ -111,8 +111,8 @@ async function seed(prisma: PrismaClient, repoDir: string) {
   await prisma.user.createMany({
     data: [
       { upn: ADMIN, name: "Platform admin", role: "ADMIN" },
-      { upn: OPERATOR, name: "Platform operator", role: "OPERATOR" },
-      { upn: APPROVER, name: "Bank A approver", role: "APPROVER", tenantId: TENANT_A },
+      { upn: OPERATOR, name: "Platform operator", role: "ADMIN" },
+      { upn: APPROVER, name: "Bank A approver", role: "ADMIN", tenantId: TENANT_A },
     ],
   });
   const repoPath = "pkgs/7zip/24.08/7z2408-x64.msi";

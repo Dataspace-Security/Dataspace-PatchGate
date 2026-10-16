@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { getCurrentUser, requireRole, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { handle, ok } from "@/lib/api/response";
 import { appendAudit } from "@/lib/audit/service";
 import { DomainError } from "@/lib/errors";
@@ -16,7 +16,7 @@ export async function POST(req: Request): Promise<Response> {
   return handle(async () => {
     requireSameOrigin(req);
     const user = await getCurrentUser();
-    requireRole(user, ["OPERATOR", "APPROVER", "ADMIN"]);
+    requireWriter(user);
     const tenantId = await requireTenant(user);
     const tactical = tacticalForTenant(tenantId);
 

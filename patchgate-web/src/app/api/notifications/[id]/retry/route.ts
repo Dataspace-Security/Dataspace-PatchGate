@@ -1,4 +1,4 @@
-import { getCurrentUser, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { handle, ok } from "@/lib/api/response";
 import { retryNotification } from "@/lib/notify/settings";
 
@@ -7,6 +7,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   return handle(async () => {
     requireSameOrigin(req);
     const { id } = await ctx.params;
-    return ok(await retryNotification(await getCurrentUser(), id));
+    const user = await getCurrentUser();
+    requireWriter(user);
+    return ok(await retryNotification(user, id));
   });
 }

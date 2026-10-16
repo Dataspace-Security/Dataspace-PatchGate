@@ -2,7 +2,8 @@ import { Suspense } from "react";
 import { CheckCircle2, MinusCircle, PlusCircle, ShieldQuestion, XCircle } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { getPageUser } from "@/lib/auth/page-user";
-import { isPlatformAdmin, isPlatformUser, resolveActiveTenant, withTenant } from "@/lib/tenancy";
+import { isPlatformAdmin, isPlatformReader, isPlatformUser, resolveActiveTenant, withTenant } from "@/lib/tenancy";
+import { canWrite } from "@/lib/auth/roles";
 import { ActionButton } from "@/components/action-button";
 import { Badge, Card, EmptyState, Loading, PageHeader, fmtDate, rowCls, tableCls, theadCls } from "@/components/ui";
 import { listAllowlistRequests } from "@/lib/discovery/service";
@@ -15,7 +16,7 @@ async function AppsContent() {
   const platformStaff = isPlatformUser(user);
   // Trust decisions and the shared allow-list are ours (platform admins), never a bank admin's.
   const isAdmin = isPlatformAdmin(user);
-  const canToggleBank = user.role === "ADMIN" && tenant !== null;
+  const canToggleBank = canWrite(user) && tenant !== null;
   const now = new Date();
 
   const [held, apps, mirrors, runs] = await Promise.all([
@@ -30,7 +31,8 @@ async function AppsContent() {
     platformStaff ? prisma.fetchRun.findMany({ orderBy: { startedAt: "desc" }, take: 15 }) : Promise.resolve([]),
   ]);
   // Banks' "Manage" of a product that is not on the shared list yet: decided by platform admins only.
-  const requests = isAdmin ? await listAllowlistRequests() : [];
+  // Platform auditors see the list too (read-only: no Approve / Decline buttons).
+  const requests = isPlatformReader(user) ? await listAllowlistRequests() : [];
   const enabled = tenant
     ? new Set((await withTenant(tenant.id, (tx) => tx.tenantApp.findMany({ where: { tenantId: tenant.id }, select: { appId: true } }))).map((r) => r.appId))
     : null;
@@ -56,10 +58,12 @@ async function AppsContent() {
                     {r.publisher ?? "unknown publisher"} · on {r.endpointCount} PCs · requested by {r.requestedBy ?? "?"} on {fmtDate(r.requestedAt)}
                   </p>
                 </div>
+                {isAdmin && (
                 <div className="flex gap-2">
                   <ActionButton url={`/api/discovery/${r.id}/approve`} label="Approve" variant="primary" icon={<CheckCircle2 size={15} />} confirmText={`Add ${r.wingetId} to the shared allow-list and enable it for ${r.tenantName}?`} />
                   <ActionButton url={`/api/discovery/${r.id}/decline`} label="Decline" icon={<XCircle size={15} />} askReason />
                 </div>
+                )}
               </li>
             ))}
           </ul>

@@ -51,7 +51,7 @@ const baseSchema = z.object({
   OIDC_POST_LOGOUT_REDIRECT_URI: z.url().optional(),
   OIDC_SCOPES: z.string().default("openid profile email"),
   OIDC_ROLE_CLAIM: z.string().default("roles"), // dotted path, e.g. "realm_access.roles" (Keycloak)
-  OIDC_ROLE_MAP: z.string().optional(), // "PatchGate.Admin=ADMIN; PatchGate.Approver=APPROVER; ..."
+  OIDC_ROLE_MAP: z.string().optional(), // "PatchGate.Admin=ADMIN; PatchGate.Auditor=AUDITOR" (only these two roles)
   OIDC_UPN_CLAIM: z.string().default("preferred_username"),
   // Which users this IdP signs in: "platform" (our team) or ONE bank's Tenant.id. Required for AUTH_MODE=oidc.
   OIDC_USER_SCOPE: z.string().regex(/^(platform|[A-Za-z0-9_-]{1,64})$/).optional(),
@@ -62,6 +62,10 @@ const baseSchema = z.object({
   // ---- Login mode. "local" = PatchGate accounts (password + mandatory TOTP) — the production default.
   //      "oidc" = external IdP (optional). "dev" = development user switcher (development only).
   AUTH_MODE: z.enum(["local", "oidc", "dev"]).optional(),
+  // Second factor of LOCAL sign-in: "required" (default — password + 6-digit TOTP) or "off" (password only;
+  // stored TOTP secrets are kept, so switching back to "required" works at once). Must be "required" before
+  // go-live (GO-LIVE-CHECKLIST). OIDC is unaffected (the IdP does MFA).
+  AUTH_MFA: z.enum(["required", "off"]).default("required"),
   // 32-byte key (64 hex) encrypting TOTP secrets at rest (AES-256-GCM). Required for AUTH_MODE=local.
   AUTH_ENC_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, "64 hex chars").optional(),
   // Key rotation only (RUNBOOK §9.4): the OLD AUTH_ENC_KEY, decrypt-only, until the re-encryption CLI ran.
@@ -158,6 +162,16 @@ export function authMode(e: Env = env()): "local" | "oidc" | "dev" {
   if (e.AUTH_MODE) return e.AUTH_MODE;
   if (OIDC_REQUIRED.every((k) => !!e[k])) return "oidc";
   return e.NODE_ENV === "development" ? "dev" : "local";
+}
+
+/** Does local sign-in ask for the 6-digit TOTP code? (AUTH_MFA=off → password only; OIDC/dev: not applicable.) */
+export function mfaRequired(e: Pick<Env, "AUTH_MFA"> = env()): boolean {
+  return e.AUTH_MFA !== "off";
+}
+
+/** Local sign-in with the second factor switched off — warned about on /operations, /api/health and to admins. */
+export function mfaDisabled(e: Env = env()): boolean {
+  return authMode(e) === "local" && !mfaRequired(e);
 }
 
 /** Is the /repo tree served without authentication? Explicit REPO_PUBLIC, else only outside production. */

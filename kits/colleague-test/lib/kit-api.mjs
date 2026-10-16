@@ -6,7 +6,7 @@
 //                         password + authenticator), bank "Test Bank" (test-bank), the test users (created
 //                         through Administration -> Users API) and their first sign-in (TOTP enrolment).
 //   enrol "<site name>"   one-time enrolment code + job-key fingerprint -> /kit/secret/enrol.env (0600)
-//   totp <who>            current 6-digit code for <who> (platform-admin|operator|bank-admin|approver)
+//   totp <who>            current 6-digit code for <who> (a key from users.conf, e.g. approver)
 //   check-login <who>     sign in with password + TOTP and call one API as that user (prints role/status)
 //   logins                print logins.txt content (secrets!) — only redirected into a 0600 file by the kit
 //
@@ -18,15 +18,25 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "n
 const BASE = process.env.PG_URL ?? "https://patchgate.pgi.test";
 const SECRET_DIR = "/kit/secret";
 const USERS = `${SECRET_DIR}/users.json`;
-const BANK = { slug: "test-bank", name: "Test Bank" };
-
-// Who is who. The platform admin is created by the server installer; the others by setup (real admin API).
-export const PEOPLE = {
-  "platform-admin": { upn: "admin@pgi.test", name: "Platform Admin", role: "ADMIN", bank: false, what: "PatchGate platform admin (our team, all banks)" },
-  operator: { upn: "operator@pgi.test", name: "Platform Operator", role: "OPERATOR", bank: false, what: "PatchGate platform operator (raises change requests = maker)" },
-  "bank-admin": { upn: "admin@test-bank.test", name: "Test Bank Admin", role: "ADMIN", bank: true, what: "Test Bank administrator (manages the bank's users)" },
-  approver: { upn: "approver@test-bank.test", name: "Test Bank Approver", role: "APPROVER", bank: true, what: "Test Bank approver (checker: the bank approval every change needs)" },
-};
+// Who is who: /kit/users.conf, written by test-on-my-pc.sh from its KIT_BANK / KIT_USERS block (the ONE place
+// where accounts and role names are defined). Lines: "BANK|slug|name" and "key|upn|name|role|platform|bank|what".
+// The first platform ADMIN is created by the server installer; all others by `setup` through the admin API.
+function readConfig() {
+  const people = {};
+  let bank = null;
+  for (const raw of readFileSync("/kit/users.conf", "utf8").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const f = line.split("|");
+    if (f[0] === "BANK") bank = { slug: f[1], name: f[2] };
+    else people[f[0]] = { upn: f[1], name: f[2], role: f[3], bank: f[4] === "bank", what: f[5] ?? "" };
+  }
+  if (!bank) throw new Error("users.conf has no BANK line");
+  const first = Object.keys(people)[0];
+  if (!first || people[first].bank || people[first].role !== "ADMIN") throw new Error("users.conf: the first account must be the platform ADMIN (created by the installer)");
+  return { bank, people, installerAdmin: first };
+}
+const { bank: BANK, people: PEOPLE, installerAdmin: ADMIN_KEY } = readConfig();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (s) => process.stdout.write(`    ${s}\n`);
@@ -162,17 +172,17 @@ function must(r, what) {
 // ---------------------------------------------------------------- commands
 async function setup() {
   const st = readState();
-  const adm = PEOPLE["platform-admin"];
-  if (!st.users["platform-admin"]) {
+  const adm = PEOPLE[ADMIN_KEY];
+  if (!st.users[ADMIN_KEY]) {
     const tmp = `${SECRET_DIR}/admin-temp-password`;
     if (!existsSync(tmp)) throw new Error(`${tmp} missing (the installer's one-time password was not captured)`);
     const pw = readFileSync(tmp, "utf8").trim();
     if (!pw) throw new Error("captured installer password is empty");
-    st.users["platform-admin"] = { upn: adm.upn, role: adm.role, bank: null, password: pw, installerPassword: pw };
+    st.users[ADMIN_KEY] = { upn: adm.upn, role: adm.role, bank: null, password: pw, installerPassword: pw };
     writeState(st);
   }
   log(`signing in as the platform admin ${adm.upn} (real login API)`);
-  const admin = await signIn("platform-admin");
+  const admin = await signIn(ADMIN_KEY);
 
   // Bank (Administration -> Banks). Creating it also creates the standard rollout rings.
   const tenants = must(await call(admin, "GET", "/api/admin/tenants"), "list banks");
@@ -187,7 +197,7 @@ async function setup() {
 
   // Users (Administration -> Users): temporary password returned once.
   for (const [key, p] of Object.entries(PEOPLE)) {
-    if (key === "platform-admin") continue;
+    if (key === ADMIN_KEY) continue;
     const s = readState();
     if (!s.users[key]) {
       const r = await call(admin, "POST", "/api/admin/users", { upn: p.upn, name: p.name, role: p.role, tenantId: p.bank ? bank.id : null });
@@ -204,7 +214,7 @@ async function setup() {
 async function enrol(siteName) {
   const st = readState();
   if (!st.bankId) throw new Error("run setup first");
-  const admin = await signIn("platform-admin");
+  const admin = await signIn(ADMIN_KEY);
   const d = must(await call(admin, "POST", "/api/connector/admin/enrollments", { tenantId: st.bankId, name: siteName }), "create enrolment code");
   mkdirSync(SECRET_DIR, { recursive: true, mode: 0o700 });
   const f = `${SECRET_DIR}/enrol.env`;
@@ -225,6 +235,48 @@ async function checkLogin(key) {
   if (r.status !== 200) process.exitCode = 1;
 }
 
+/** The core rule, through the real API: maker != checker and the bank must approve (platform staff cannot). */
+async function crCheck(ringId, patchId, checkerKey) {
+  const st = readState();
+  if (!st.bankId) throw new Error("run setup first");
+  if (!PEOPLE[checkerKey]) throw new Error(`unknown checker account ${checkerKey}`);
+  const admin = await signIn(ADMIN_KEY);
+  must(await call(admin, "POST", "/api/tenant/select", { tenantId: st.bankId }), "select Test Bank");
+  const cr = must(
+    await call(admin, "POST", "/api/change-requests", { title: "Kit check: maker/checker (TEST FIXTURE patch)", ticketRef: "KIT-1", ringId, patchIds: [patchId] }),
+    "create change request",
+  );
+  log(`${PEOPLE[ADMIN_KEY].upn} (maker) created change request ${cr.id} for ${BANK.name}`);
+  must(await call(admin, "POST", `/api/change-requests/${cr.id}/submit`, {}), "submit change request");
+  log("submitted for approval");
+  const self = await call(admin, "POST", `/api/change-requests/${cr.id}/approve`, { reason: "kit check: maker tries to approve" });
+  if (self.json.success) throw new Error("UNEXPECTED: the maker (platform admin) could approve its own change request");
+  log(`maker approves own request -> refused (HTTP ${self.status}: ${self.json.error})`);
+  const checker = await signIn(checkerKey);
+  const ok2 = await call(checker, "POST", `/api/change-requests/${cr.id}/approve`, { reason: "kit check: bank approval" });
+  const d = must(ok2, `approve as ${PEOPLE[checkerKey].upn}`);
+  log(`${PEOPLE[checkerKey].upn} (bank checker) approves -> HTTP ${ok2.status}, status ${d.status ?? d.changeRequest?.status ?? "?"}`);
+
+  // Second request raised by a bank user: the platform admin is NOT the maker, but still cannot give the bank's yes.
+  const bankMaker = Object.keys(PEOPLE).find((k) => PEOPLE[k].bank && k !== checkerKey && ["ADMIN", "OPERATOR", "APPROVER"].includes(PEOPLE[k].role));
+  if (!bankMaker) return;
+  const bm = await signIn(bankMaker);
+  const cr2 = must(
+    await call(bm, "POST", "/api/change-requests", { title: "Kit check: bank approval required (TEST FIXTURE patch)", ticketRef: "KIT-2", ringId, patchIds: [patchId] }),
+    `create change request as ${PEOPLE[bankMaker].upn}`,
+  );
+  must(await call(bm, "POST", `/api/change-requests/${cr2.id}/submit`, {}), "submit second change request");
+  log(`${PEOPLE[bankMaker].upn} (bank maker) created + submitted change request ${cr2.id}`);
+  const plat = await call(admin, "POST", `/api/change-requests/${cr2.id}/approve`, { reason: "kit check: platform staff tries to approve" });
+  const after = plat.json.success ? (plat.json.data.status ?? plat.json.data.changeRequest?.status) : null;
+  if (plat.json.success && after === "APPROVED") throw new Error("UNEXPECTED: platform staff alone approved a bank change request");
+  log(plat.json.success
+    ? `platform admin approves -> recorded, but the request stays ${after} (the bank's approval is still required)`
+    : `platform admin approves -> refused (HTTP ${plat.status}: ${plat.json.error})`);
+  const fin = must(await call(checker, "POST", `/api/change-requests/${cr2.id}/approve`, { reason: "kit check: bank approval" }), "bank approval of the second request");
+  log(`${PEOPLE[checkerKey].upn} approves -> status ${fin.status ?? fin.changeRequest?.status ?? "?"}`);
+}
+
 function logins() {
   const st = readState();
   const lines = [];
@@ -234,7 +286,7 @@ function logins() {
     lines.push(`[${key}]  ${p.what}`);
     lines.push(`  sign-in name : ${u.upn}`);
     lines.push(`  password     : ${u.password}`);
-    if (key === "platform-admin" && u.installerPassword) lines.push(`  (installer's one-time password was: ${u.installerPassword} - already used and replaced by the kit at first sign-in)`);
+    if (key === ADMIN_KEY && u.installerPassword) lines.push(`  (installer's one-time password was: ${u.installerPassword} - already used and replaced by the kit at first sign-in)`);
     else if (u.tempPassword) lines.push(`  (temporary password from Administration -> Users was: ${u.tempPassword} - already replaced at first sign-in)`);
     if (u.totpSecret) {
       lines.push(`  TOTP secret  : ${u.totpSecret}`);
@@ -253,6 +305,13 @@ try {
     if (!PEOPLE[arg]) throw new Error(`who? one of: ${Object.keys(PEOPLE).join(", ")}`);
     process.stdout.write(`${await freshCode(arg)}\n`);
   } else if (cmd === "check-login") await checkLogin(arg);
+  else if (cmd === "cr-check") await crCheck(arg, process.argv[4], process.argv[5]);
+  else if (cmd === "get") {
+    // debugging aid: GET <path> as <who>, prints the JSON body
+    const jar = await signIn(arg);
+    const r = await call(jar, "GET", process.argv[4]);
+    process.stdout.write(`${JSON.stringify(r.json).slice(0, 4000)}\n`);
+  }
   else if (cmd === "logins") logins();
   else throw new Error("usage: kit-api.mjs setup | enrol <site> | totp <who> | check-login <who> | logins");
 } catch (err) {

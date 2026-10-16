@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, AppWindow, Bell, FileBarChart, Cable, FileCheck2, LayoutDashboard, Monitor, Package, Radar, ScrollText, Settings, SlidersHorizontal } from "lucide-react";
+import { Activity, AppWindow, FileBarChart, Cable, FileCheck2, LayoutDashboard, Monitor, Package, Radar, ScrollText, Settings, SlidersHorizontal } from "lucide-react";
 
 export const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -14,9 +14,9 @@ export const NAV = [
   { href: "/connectors", label: "Connectors", icon: Cable },
   { href: "/audit", label: "Audit", icon: ScrollText },
   { href: "/reports", label: "Reports", icon: FileBarChart },
-  { href: "/settings/notifications", label: "Notifications", icon: Bell },
-  // Bank settings (rings, windows, approval policy); the /settings pages enforce ADMIN themselves.
-  { href: "/settings/rings", label: "Settings", icon: SlidersHorizontal },
+  // ONE entry for everything optional (rings, windows, approval policy, notifications, account security):
+  // the normal flow needs none of it. The /settings pages enforce their own access rules.
+  { href: "/settings/rings", label: "Advanced settings", icon: SlidersHorizontal },
   // Shown to everyone; the /admin pages enforce their own access rules.
   { href: "/admin", label: "Admin", icon: Settings },
 ] as const;

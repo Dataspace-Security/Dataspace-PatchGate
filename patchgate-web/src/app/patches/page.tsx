@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { canMake } from "@/lib/auth/roles";
 import { eligibilityErrors } from "@/lib/approvals/eligibility";
 import { enabledAppIds, toEligible } from "@/lib/approvals/load-eligible";
 import { withTenant } from "@/lib/tenancy";
@@ -64,7 +65,7 @@ async function PatchList({ searchParams }: { searchParams: Promise<Search> }) {
     <PatchPicker
       patches={rows}
       rings={rings.map((r) => ({ id: r.id, name: r.name, windows: r.windows }))}
-      canCreate={user.role !== "VIEWER"}
+      canCreate={canMake(user)}
     />
   );
 }

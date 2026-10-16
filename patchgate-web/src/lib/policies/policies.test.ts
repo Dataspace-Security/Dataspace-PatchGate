@@ -93,10 +93,10 @@ describe("account policy", () => {
     const old = new Date(now.getTime() - 200 * DAY);
     const older = new Date(now.getTime() - 300 * DAY);
     const rows: ActivityRow[] = [
-      { id: "bank-user", role: "OPERATOR", tenantId: "t1", lastActivityAt: old },
+      { id: "bank-user", role: "ADMIN", tenantId: "t1", lastActivityAt: old },
       { id: "pa1", role: "ADMIN", tenantId: null, lastActivityAt: old },
       { id: "pa2", role: "ADMIN", tenantId: null, lastActivityAt: older },
-      { id: "fresh", role: "VIEWER", tenantId: "t1", lastActivityAt: new Date(now.getTime() - DAY) },
+      { id: "fresh", role: "AUDITOR", tenantId: "t1", lastActivityAt: new Date(now.getTime() - DAY) },
     ];
     // both platform admins stale and they are the only ones: the most recently active (pa1) stays
     expect(inactiveToDisable(rows, { inactivityDisableDays: 90 }, now, 2).map((r) => r.id)).toEqual(["bank-user", "pa2"]);

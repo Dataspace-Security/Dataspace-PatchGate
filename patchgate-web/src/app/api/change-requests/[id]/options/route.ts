@@ -1,4 +1,4 @@
-import { getCurrentUser, requireRole, requireSameOrigin } from "@/lib/auth/session";
+import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { handle, ok } from "@/lib/api/response";
 import { updateDraftOptions } from "@/lib/approvals/emergency";
 import { requireTenant } from "@/lib/tenancy";
@@ -8,7 +8,7 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/change-request
   return handle(async () => {
     requireSameOrigin(req);
     const user = await getCurrentUser();
-    requireRole(user, ["OPERATOR", "APPROVER", "ADMIN"]);
+    requireWriter(user);
     const tenantId = await requireTenant(user);
     const { id } = await ctx.params;
     return ok(await updateDraftOptions(user, tenantId, id, await req.json().catch(() => null)));

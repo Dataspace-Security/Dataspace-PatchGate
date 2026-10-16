@@ -80,7 +80,7 @@ Options (each also settable via the env var in brackets):
   --registry PREFIX        registry/namespace, e.g. registry.example.com/pg      [PG_REGISTRY]
   --version VER            image tag (web and tools always use the same)         [PG_VERSION]
   --source-dir DIR         repo root (deploy/ + patchgate-web/); default: ../..  [PG_SOURCE_DIR]
-  --image-archive FILE     `docker save` tar to load before pulling (offline)    [PG_IMAGE_ARCHIVE]
+  --image-archive FILE|DIR `docker save` tar, or a release images/ dir (offline) [PG_IMAGE_ARCHIVE]
   --siem-url tls://H:P     platform SIEM (mandatory before go-live)              [PG_SIEM_URL]
   --siem-ca FILE           CA of the SIEM certificate                            [PG_SIEM_CA]
   --codesign-ca FILE       Authenticode root bundle (RUNBOOK §4.4)               [PG_CODESIGN_CA]
@@ -322,7 +322,9 @@ start_docker() {
   if [ ! -d /run/systemd/system ] && ! pgrep -x dockerd >/dev/null 2>&1; then
     # No init system (e.g. a container used for testing): run the daemon in the background.
     info "no systemd: starting dockerd in the background (log /var/log/dockerd.log)"
-    nohup dockerd >/var/log/dockerd.log 2>&1 &
+    # </dev/null 3>&-: the daemon must not inherit our stdin (curl | bash) or fd 3 (terminal), otherwise
+    # whoever reads our output (| tee, docker exec) never sees EOF and waits forever.
+    nohup dockerd >/var/log/dockerd.log 2>&1 </dev/null 3>&- &
   fi
   for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && return 0; sleep 2; done
   die "Docker daemon did not start (systemctl status docker / journalctl -u docker)"
@@ -560,11 +562,20 @@ setup_firewall() {
 FIREWALL_APPLIED=0
 
 # ------------------------------------------------------------------ images
-load_archive() {
+load_archive() { # a `docker save` file, or a release images/ directory (every *.tar / *.tar.gz in it)
   [ -n "$IMAGE_ARCHIVE" ] || return 0
-  [ -r "$IMAGE_ARCHIVE" ] || die "cannot read --image-archive $IMAGE_ARCHIVE"
-  info "loading images from $IMAGE_ARCHIVE"
-  docker load -i "$IMAGE_ARCHIVE" | sed 's/^/    /'
+  local f files=()
+  if [ -d "$IMAGE_ARCHIVE" ]; then
+    for f in "$IMAGE_ARCHIVE"/*.tar.gz "$IMAGE_ARCHIVE"/*.tar; do [ -f "$f" ] && files+=("$f"); done
+    [ ${#files[@]} -gt 0 ] || die "no *.tar / *.tar.gz image archives in $IMAGE_ARCHIVE"
+  else
+    [ -r "$IMAGE_ARCHIVE" ] || die "cannot read --image-archive $IMAGE_ARCHIVE"
+    files=("$IMAGE_ARCHIVE")
+  fi
+  for f in "${files[@]}"; do
+    info "loading images from $(basename "$f")"
+    docker load -i "$f" | sed 's/^/    /'
+  done
 }
 have_image() { docker image inspect "$1" >/dev/null 2>&1; }
 get_images() {

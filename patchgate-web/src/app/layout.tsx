@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { ShieldCheck } from "lucide-react";
 import { CurrentUser } from "@/components/current-user";
+import { MfaOffBanner } from "@/components/mfa-banner";
 import { NavForUser } from "@/components/nav-for-user";
 import { NavLinksStatic } from "@/components/nav-links";
 import { TenantSwitcher } from "@/components/tenant-switcher";
@@ -90,7 +91,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               </Suspense>
             </header>
 
-            <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-8">{children}</main>
+            <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-8">
+              <Suspense fallback={null}>
+                <MfaOffBanner />
+              </Suspense>
+              {children}
+            </main>
           </div>
         </div>
       </body>

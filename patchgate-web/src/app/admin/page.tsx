@@ -7,7 +7,7 @@ import { Badge, Card, EmptyState, Loading, PageHeader, Stat, fmtDate, rowCls, ta
 import { AdminTabs, getAdminUser } from "./admin-guard";
 
 async function Overview() {
-  const { user, denied } = await getAdminUser();
+  const { user, denied, readOnly } = await getAdminUser();
   if (denied) return denied;
   const platform = user.tenantId === null;
   const scope = platform ? {} : { tenantId: user.tenantId };
@@ -45,15 +45,15 @@ async function Overview() {
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
-          <Card title="Users" description="Create accounts, change roles, reset passwords or authenticators, deactivate leavers.">
+          <Card title="Users" description={readOnly ? "Every account in your scope, with role, status and last sign-in (read-only)." : "Create accounts, change roles, reset passwords or authenticators, deactivate leavers."}>
             <Link href="/admin/users" className="text-sm font-medium text-primary hover:underline">
-              Manage users →
+              {readOnly ? "View users →" : "Manage users →"}
             </Link>
           </Card>
           {platform ? (
-            <Card title="Banks" description="Onboard banks, set the bank-approval policy, suspend a bank.">
+            <Card title="Banks" description={readOnly ? "Every client bank and its status (read-only)." : "Onboard banks, suspend a bank."}>
               <Link href="/admin/banks" className="text-sm font-medium text-primary hover:underline">
-                Manage banks →
+                {readOnly ? "View banks →" : "Manage banks →"}
               </Link>
             </Card>
           ) : (

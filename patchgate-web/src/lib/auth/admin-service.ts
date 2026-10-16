@@ -2,7 +2,7 @@ import { authTx } from "./tx";
 import "server-only";
 import { enqueueNotification } from "@/lib/notify/enqueue";
 import { z } from "zod";
-import { Prisma, UserRole } from "@prisma/client";
+import { Prisma, type UserRole } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { DomainError } from "@/lib/errors";
 import { appendAudit } from "@/lib/audit/service";
@@ -11,6 +11,7 @@ import { auditAuth } from "./audit";
 import { PROMOTION_COOLDOWN_DAYS, recentBankAdminReset } from "./reset-flag";
 import { generateTempPassword, hashPassword } from "./password";
 import { revokeUserSessions } from "./session-store";
+import { ACTIVE_ROLES, canRead } from "./roles";
 import { AuthError, type SessionUser } from "./session";
 
 /**
@@ -18,6 +19,8 @@ import { AuthError, type SessionUser } from "./session";
  * - Platform admin (role ADMIN, tenantId null): all banks, all users (bank users and our team).
  * - Bank admin (role ADMIN, tenantId set): users of their own bank only; never platform users,
  *   never another bank, never moves a user between banks (a user's bank is fixed at creation).
+ * - Auditors (role AUDITOR) READ the same lists in their scope (platform: everything; bank: own bank) and
+ *   change nothing. Roles: ADMIN / AUDITOR only (lib/auth/roles.ts; DB CHECK User_role_scope).
  * Guards: nobody deactivates or demotes themselves; at least one active platform admin remains.
  * Every change is audited (bank users on their bank's chain, platform users / banks on the platform chain).
  */
@@ -32,6 +35,12 @@ export type AdminScope = "platform" | "bank";
 /** ADMIN role required; returns whether the actor administers the platform or one bank. */
 export function requireAdmin(actor: SessionUser): AdminScope {
   if (actor.role !== "ADMIN") throw new AuthError("Administrator role required", 403);
+  return actor.tenantId === null ? "platform" : "bank";
+}
+
+/** ADMIN or AUDITOR (read-only views of the user / bank lists); returns the scope that is visible. */
+export function requireAdminReader(actor: SessionUser): AdminScope {
+  if (!canRead(actor)) throw new AuthError("Administrator or auditor role required", 403);
   return actor.tenantId === null ? "platform" : "bank";
 }
 
@@ -55,7 +64,8 @@ const upnSchema = z
   .max(200)
   .regex(/^[^\s@]+@[^\s@]+$/, "use the sign-in name in name@domain form");
 const nameSchema = z.string().trim().min(1).max(120);
-const roleSchema = z.enum(UserRole);
+// Only the two active roles can be granted; the retired VIEWER / OPERATOR / APPROVER are refused here and by the DB.
+const roleSchema = z.enum(ACTIVE_ROLES);
 
 export const createUserSchema = z.object({
   upn: upnSchema,
@@ -147,9 +157,9 @@ function toView(u: UserRow): AdminUserView {
   };
 }
 
-/** Users the actor may manage: everyone (platform admin) or their own bank's users (bank admin). */
+/** Users the actor may see: everyone (platform admin / auditor) or their own bank's users (bank admin / auditor). */
 export async function listUsers(actor: SessionUser): Promise<AdminUserView[]> {
-  requireAdmin(actor);
+  requireAdminReader(actor);
   const rows = await prisma.user.findMany({
     where: actor.tenantId === null ? {} : { tenantId: actor.tenantId },
     orderBy: [{ tenantId: { sort: "asc", nulls: "first" } }, { upn: "asc" }],
@@ -160,7 +170,7 @@ export async function listUsers(actor: SessionUser): Promise<AdminUserView[]> {
 }
 
 export async function listTenants(actor: SessionUser) {
-  requireAdmin(actor);
+  requireAdminReader(actor);
   return prisma.tenant.findMany({
     where: actor.tenantId === null ? {} : { id: actor.tenantId },
     orderBy: { name: "asc" },
@@ -241,7 +251,7 @@ export async function updateUser(actor: SessionUser, userId: string, input: z.in
   if (requireAdmin(actor) === "bank" && input.role !== undefined && PRIVILEGED_ROLES.includes(input.role)) {
     const target = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, tenantId: true, role: true } });
     if (target && canManageTenantUsers(actor, target.tenantId) && !PRIVILEGED_ROLES.includes(target.role) && (await recentBankAdminReset(target))) {
-      throw new AuthError(`This user's credentials were reset by a bank administrator in the last ${PROMOTION_COOLDOWN_DAYS} days; a PatchGate platform administrator must grant the ${input.role.toLowerCase()} role.`, 403);
+      throw new AuthError(`This user's credentials were reset by a bank administrator in the last ${PROMOTION_COOLDOWN_DAYS} days; a PatchGate platform administrator must grant the admin role.`, 403);
     }
   }
 
@@ -275,13 +285,14 @@ export async function updateUser(actor: SessionUser, userId: string, input: z.in
 export type UserAction = z.infer<typeof userActionSchema>["action"];
 
 /** Roles whose credentials a BANK admin may not reset (maker-checker: the admin would learn them). */
-export const PRIVILEGED_ROLES: readonly UserRole[] = ["APPROVER", "ADMIN"];
+export const PRIVILEGED_ROLES: readonly UserRole[] = ["ADMIN"];
 
 /**
  * May `scope` reset the credentials (password / authenticator) of a user with role `targetRole`?
- * A bank admin who resets an approver learns the temporary password, enrols their own authenticator and can
- * then act as maker AND checker. So bank admins reset only VIEWER / OPERATOR credentials; approver and admin
- * resets need a PatchGate platform administrator. Unlock reveals nothing and stays with the bank admin.
+ * Bank admins are the bank's checkers: one who resets ANOTHER bank admin learns the temporary password,
+ * enrols their own authenticator and can then act as maker AND checker. So bank admins reset only AUDITOR
+ * credentials; resetting an admin needs a PatchGate platform administrator (audited on the bank's chain).
+ * Unlock reveals nothing and stays with the bank admin.
  */
 export function canResetCredentials(scope: AdminScope, action: UserAction, targetRole: UserRole): boolean {
   if (action === "unlock" || scope === "platform") return true;
@@ -299,12 +310,12 @@ export async function userAction(actor: SessionUser, userId: string, action: Use
     if (canResetCredentials(scope, action, target.role)) return null;
     // Audited on the bank's chain (the bank SIEM sees the attempt), then refused.
     await auditAuth(
-      { actor: actor.upn, action: "user.reset_denied", entity: "User", entityId: userId, payload: { upn: target.upn, targetRole: target.role, requested: action, reason: "approver/admin credentials need a platform administrator" }, tenantId: target.tenantId },
+      { actor: actor.upn, action: "user.reset_denied", entity: "User", entityId: userId, payload: { upn: target.upn, targetRole: target.role, requested: action, reason: "admin credentials need a platform administrator" }, tenantId: target.tenantId },
       tx,
     );
     return target.role;
   });
-  if (denied) throw new AuthError(`Resetting the credentials of a ${denied.toLowerCase()} requires a PatchGate platform administrator.`, 403);
+  if (denied) throw new AuthError(`Resetting the credentials of an ${denied.toLowerCase()} requires a PatchGate platform administrator.`, 403);
 
   return authTx(async (tx) => {
     const target = await loadManagedUser(tx, actor, userId);

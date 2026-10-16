@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { Ban, Cable } from "lucide-react";
 import { getPageUser } from "@/lib/auth/page-user";
-import { isPlatformAdmin } from "@/lib/tenancy/policy";
+import { isPlatformAdmin, isPlatformReader } from "@/lib/tenancy/policy";
 import { listActiveBanks, listConnectors, listPendingEnrollments, type ConnectorView } from "@/lib/connector/admin";
 import { ActionButton } from "@/components/action-button";
 import { Alert, Badge, Card, EmptyState, Loading, PageHeader, fmtDate, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
@@ -113,7 +113,8 @@ async function ConnectorsView() {
   const platform = user.tenantId === null;
   const admin = isPlatformAdmin(user);
   const rows = await listConnectors(platform ? { kind: "platform" } : { kind: "tenant", tenantId: user.tenantId! });
-  const [banks, pending] = admin ? await Promise.all([listActiveBanks(), listPendingEnrollments()]) : [[], []];
+  // Platform auditors see the unused codes list too (hashes only, never a code); only admins create codes.
+  const [banks, pending] = admin ? await Promise.all([listActiveBanks(), listPendingEnrollments()]) : platform && isPlatformReader(user) ? [[], await listPendingEnrollments()] : [[], []];
   const offline = rows.filter((c) => c.status === "ACTIVE" && !c.online);
 
   return (
@@ -121,7 +122,7 @@ async function ConnectorsView() {
       {admin && <CreateEnrollmentForm banks={banks} />}
       {!admin && (
         <Alert tone="info">
-          {platform ? "Read-only: only platform administrators enrol, limit or revoke connectors." : "Your bank's site connectors (read-only). Contact PatchGate support to enrol a new site."}
+          {platform ? "Read-only (auditor): only platform administrators enrol, limit or revoke connectors." : "Your bank's site connectors (read-only). Contact PatchGate support to enrol a new site."}
         </Alert>
       )}
       {offline.length > 0 && (
@@ -136,7 +137,7 @@ async function ConnectorsView() {
       ) : (
         <ConnectorsTable rows={rows} canAdmin={admin} showBank={platform} />
       )}
-      {admin && pending.length > 0 && (
+      {platform && pending.length > 0 && (
         <Card title="Unused enrolment codes" description="Codes are stored as hashes only; they expire 24 h after creation." padded={false}>
           <div className="overflow-x-auto">
           <table className={tableCls}>

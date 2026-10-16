@@ -10,6 +10,26 @@ signer, egress proxy, backup, site bundle. The connector protocol has its own in
 
 ## [Unreleased]
 
+### Changed
+- Server installer: `--image-archive` also takes a release `images/` directory (loads every archive in it).
+- **Role model: two roles, the same for our team and inside every bank** — `ADMIN` (does everything in its
+  scope; a bank admin is also the bank's checker) and the new `AUDITOR` (read-only: platform auditors read every
+  bank, bank auditors their own bank; never one-time secrets; 403 on every mutating route). `VIEWER`, `OPERATOR`
+  and `APPROVER` are retired: they stay in the enum but the database refuses them (CHECK `User_role_scope`).
+  Migrations `20261016140000_auditor_role` (enum value) and `20261016140100_role_scope` (mapping + CHECK +
+  default `AUDITOR`). Existing users are mapped: platform `OPERATOR`/`APPROVER`/`VIEWER` → `AUDITOR`; bank
+  `APPROVER` → `ADMIN` (bank admins are the checkers now); bank `OPERATOR`/`VIEWER` → `AUDITOR`. **Platform
+  makers (former operators) become auditors — give them `ADMIN` again if they must keep raising requests.**
+  Bank admins may reset only auditors' credentials (another admin: platform admin). `OIDC_ROLE_MAP` accepts only
+  `ADMIN` / `AUDITOR`; `create-user.ts --role ADMIN|AUDITOR`.
+- **`AUTH_MFA=required|off`** (default `required`): `off` = local sign-in with the password only (stored TOTP
+  secrets kept; temporary-password change, lockout and session rules unchanged). While off: banner for admins,
+  `mfa:"off"` on `/api/health`, `checks.mfa=false` on `/api/ready`, warning on /operations, audit
+  `auth.mfa_disabled` (platform chain) at every process start. Must be `required` for go-live.
+- Simpler navigation: rings, maintenance windows, approval policy, notifications and account security are one
+  **Advanced settings** group; reboot policy and emergency change are under **Advanced options** on the change
+  request form / draft. No behaviour or default changed.
+
 ## [1.0.0-rc3] - 2026-10-16
 
 Third release candidate: rc2 plus the platform approval rule and the fixes from the rc2 end-to-end validation.

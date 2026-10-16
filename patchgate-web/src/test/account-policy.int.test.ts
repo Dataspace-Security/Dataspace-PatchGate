@@ -81,7 +81,7 @@ describe("security policy administration", () => {
 describe("password max age", () => {
   it("an expired password forces a change at the next sign-in, then signs in normally", async () => {
     const root = await platformAdmin();
-    const u = await prisma.user.create({ data: { upn: "alice@bank-a.test", name: "Alice", role: "OPERATOR", tenantId: TENANT_A, passwordHash: await hashPassword(STRONG) } });
+    const u = await prisma.user.create({ data: { upn: "alice@bank-a.test", name: "Alice", role: "ADMIN", tenantId: TENANT_A, passwordHash: await hashPassword(STRONG) } });
     const secret = await enrol(u.upn, at(0));
 
     await updateSecurityPolicy(root, { passwordMaxAgeDays: 30 });
@@ -104,7 +104,7 @@ describe("password max age", () => {
 describe("max concurrent sessions", () => {
   it("a new sign-in revokes the oldest sessions beyond the cap (audited)", async () => {
     const root = await platformAdmin();
-    const u = await prisma.user.create({ data: { upn: "bob@bank-a.test", name: "Bob", role: "APPROVER", tenantId: TENANT_A, passwordHash: await hashPassword(STRONG) } });
+    const u = await prisma.user.create({ data: { upn: "bob@bank-a.test", name: "Bob", role: "ADMIN", tenantId: TENANT_A, passwordHash: await hashPassword(STRONG) } });
     const secret = await enrol(u.upn, at(0)); // session #1
     await updateSecurityPolicy(root, { maxSessionsPerUser: 2 });
     step(await login(u.upn, secret, at(60)), "done"); // #2
@@ -129,9 +129,9 @@ describe("inactivity auto-disable", () => {
     const long = new Date(NOW.getTime() - 200 * DAY);
     const rootOld = await platformAdmin("root-old@platform.test", { createdAt: long, lastLoginAt: new Date(NOW.getTime() - 150 * DAY) });
     const rootOlder = await platformAdmin("root-older@platform.test", { createdAt: long, lastLoginAt: null });
-    const idle = await prisma.user.create({ data: { upn: "idle@bank-a.test", name: "Idle", role: "OPERATOR", tenantId: TENANT_A, createdAt: long, lastLoginAt: long } });
-    const active = await prisma.user.create({ data: { upn: "busy@bank-a.test", name: "Busy", role: "OPERATOR", tenantId: TENANT_A, createdAt: long, lastLoginAt: new Date(NOW.getTime() - DAY) } });
-    const fresh = await prisma.user.create({ data: { upn: "new@bank-a.test", name: "New", role: "VIEWER", tenantId: TENANT_A } });
+    const idle = await prisma.user.create({ data: { upn: "idle@bank-a.test", name: "Idle", role: "ADMIN", tenantId: TENANT_A, createdAt: long, lastLoginAt: long } });
+    const active = await prisma.user.create({ data: { upn: "busy@bank-a.test", name: "Busy", role: "ADMIN", tenantId: TENANT_A, createdAt: long, lastLoginAt: new Date(NOW.getTime() - DAY) } });
+    const fresh = await prisma.user.create({ data: { upn: "new@bank-a.test", name: "New", role: "AUDITOR", tenantId: TENANT_A } });
     await prisma.session.create({ data: { id: "s".repeat(64), userId: idle.id, createdAt: long, lastSeenAt: long, expiresAt: new Date(NOW.getTime() + DAY) } });
 
     const r = await disableInactiveUsers(NOW);

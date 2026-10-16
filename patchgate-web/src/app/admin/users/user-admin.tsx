@@ -5,15 +5,7 @@ import { useRouter } from "next/navigation";
 import { Check, Copy, KeyRound, Loader2, Lock, Pencil, Power, ShieldOff, UserPlus, X } from "lucide-react";
 import { callApi } from "@/components/api-client";
 import { Alert, BUTTON, Card, buttonBase, inputCls, labelCls } from "@/components/ui";
-
-type Role = "ADMIN" | "APPROVER" | "OPERATOR" | "VIEWER";
-
-const ROLES: { value: Role; label: string }[] = [
-  { value: "VIEWER", label: "Viewer — read-only" },
-  { value: "OPERATOR", label: "Operator — creates change requests (maker)" },
-  { value: "APPROVER", label: "Approver — approves change requests (checker)" },
-  { value: "ADMIN", label: "Admin — manages users" },
-];
+import { ROLE_LABEL, roleOptions, type ActiveRole, type Role, type RoleScope } from "@/lib/auth/roles";
 
 const PLATFORM = "__platform__";
 
@@ -71,7 +63,10 @@ export function CreateUserForm({ platform, banks, ownBankName }: { platform: boo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [secret, setSecret] = useState<Secret | null>(null);
-  const [form, setForm] = useState({ upn: "", name: "", role: "VIEWER" as Role, bank: banks.find((b) => b.active)?.id ?? PLATFORM });
+  const [form, setForm] = useState({ upn: "", name: "", role: "AUDITOR" as ActiveRole, bank: banks.find((b) => b.active)?.id ?? PLATFORM });
+  const scope: RoleScope = platform && form.bank === PLATFORM ? "platform" : "bank";
+  const options = roleOptions(scope);
+  const chosen = options.find((o) => o.value === form.role);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -107,13 +102,14 @@ export function CreateUserForm({ platform, banks, ownBankName }: { platform: boo
             </label>
             <label className={labelCls}>
               Role
-              <select className={inputCls} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
-                {ROLES.map((r) => (
+              <select className={inputCls} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as ActiveRole })}>
+                {options.map((r) => (
                   <option key={r.value} value={r.value}>
                     {r.label}
                   </option>
                 ))}
               </select>
+              {chosen && <span className="mt-1 block text-xs font-normal text-muted">{chosen.description}</span>}
             </label>
             {platform ? (
               <label className={labelCls}>
@@ -169,12 +165,12 @@ interface RowUser {
   locked: boolean;
 }
 
-/** Per-row actions: edit name/role, reset password / MFA, unlock, deactivate / reactivate. */
 /**
- * canResetCredentials mirrors the server rule (admin-service): bank admins may reset only VIEWER/OPERATOR
- * credentials; APPROVER/ADMIN resets need a platform admin (maker-checker cannot be taken over).
+ * Per-row actions: edit name/role, reset password / MFA, unlock, deactivate / reactivate.
+ * canResetCredentials mirrors the server rule (admin-service): bank admins may reset only AUDITOR
+ * credentials; resetting an ADMIN needs a platform admin (a second admin account cannot be taken over).
  */
-export function UserActions({ user, self, canResetCredentials = true }: { user: RowUser; self: boolean; canResetCredentials?: boolean }) {
+export function UserActions({ user, self, platform, canResetCredentials = true }: { user: RowUser; self: boolean; platform: boolean; canResetCredentials?: boolean }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [busy, setBusy] = useState(false);
@@ -211,9 +207,9 @@ export function UserActions({ user, self, canResetCredentials = true }: { user: 
         >
           <input className={`${inputCls} mt-0 w-40`} aria-label="Full name" required maxLength={120} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
           <select className={`${inputCls} mt-0 w-36`} aria-label="Role" value={draft.role} disabled={self} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })}>
-            {ROLES.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.value.charAt(0) + r.value.slice(1).toLowerCase()}
+            {roleOptions(platform ? "platform" : "bank").map((r) => (
+              <option key={r.value} value={r.value} title={r.description}>
+                {ROLE_LABEL[r.value]}
               </option>
             ))}
           </select>

@@ -44,7 +44,7 @@ const DAY = 86_400_000;
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * DAY);
 // 1 – 10 October 2026 (to inclusive) = 240 h
 const PERIOD = parsePeriod({ period: "custom", from: "2026-10-01", to: "2026-10-10" });
-const user = { id: "u-report", upn: "auditor@a.example", name: "Auditor", role: "VIEWER" as const, tenantId: TENANT_A };
+const user = { id: "u-report", upn: "auditor@a.example", name: "Auditor", role: "AUDITOR" as const, tenantId: TENANT_A };
 
 const MY_TABLES = ["Notification", "NotificationSetting", "NotificationOptOut", "NotificationAlert", "ConnectorOutage"];
 const ids: Record<string, string> = {};
@@ -54,8 +54,8 @@ async function seed(): Promise<void> {
   for (const t of MY_TABLES) await admin.$executeRawUnsafe(`DELETE FROM "${t}"`);
   await admin.$executeRawUnsafe(`DELETE FROM "ChangeRequestApproval"`).catch(() => undefined);
 
-  const maker = await admin.user.create({ data: { upn: "maker@a.example", name: "Maker", role: "OPERATOR", tenantId: TENANT_A } });
-  const checker = await admin.user.create({ data: { upn: "checker@a.example", name: "Checker", role: "APPROVER", tenantId: TENANT_A } });
+  const maker = await admin.user.create({ data: { upn: "maker@a.example", name: "Maker", role: "ADMIN", tenantId: TENANT_A } });
+  const checker = await admin.user.create({ data: { upn: "checker@a.example", name: "Checker", role: "ADMIN", tenantId: TENANT_A } });
   const r0 = await admin.ring.create({ data: { tenantId: TENANT_A, name: "Ring0-Test", wsusGroup: "R0", order: 0 } });
   const r1 = await admin.ring.create({ data: { tenantId: TENANT_A, name: "Ring1-Prod", wsusGroup: "R1", order: 1 } });
   const rb = await admin.ring.create({ data: { tenantId: TENANT_B, name: "B-Ring", wsusGroup: "RB", order: 0 } });
@@ -117,7 +117,7 @@ async function seed(): Promise<void> {
   const emg = await cr(TENANT_A, r1.id, maker.id, "Zero-day fix", new Date("2026-10-05T09:00:00Z"), { status: "APPROVED", emergency: true, emergencyReason: "CVE exploited", requiredApprovals: 2, submittedAt: new Date("2026-10-05T09:10:00Z") });
   ids.emergency = emg.id;
   await cr(TENANT_A, r0.id, maker.id, "September patches", new Date("2026-09-10T09:00:00Z"), { status: "COMPLETED", completedAt: new Date("2026-09-12T09:00:00Z") });
-  const bMaker = await admin.user.create({ data: { upn: "maker@b.example", name: "B", role: "OPERATOR", tenantId: TENANT_B } });
+  const bMaker = await admin.user.create({ data: { upn: "maker@b.example", name: "B", role: "ADMIN", tenantId: TENANT_B } });
   await cr(TENANT_B, rb.id, bMaker.id, "Bank B change", new Date("2026-10-03T09:00:00Z"));
 
   // Connector with one 3-hour outage inside the period; bank B connector offline (must not leak).

@@ -8,7 +8,7 @@ DOCKER_APT_KEY_FPR="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v dockerd >/dev/null 2>&1; then
   apt-get update -qq
-  apt-get install -y -qq ca-certificates curl gnupg iproute2 iptables openssl procps >/dev/null
+  apt-get install -y -qq ca-certificates curl gnupg iproute2 iptables openssl procps >/dev/null 2>/var/log/kit-apt.err || { cat /var/log/kit-apt.err; exit 1; }
   install -m 0755 -d /etc/apt/keyrings
   key="$(mktemp)"
   curl -fsSL --proto "=https" --tlsv1.2 https://download.docker.com/linux/ubuntu/gpg -o "$key"
@@ -19,7 +19,7 @@ if ! command -v dockerd >/dev/null 2>&1; then
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
     > /etc/apt/sources.list.d/docker.list
   apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>/var/log/kit-apt.err || { cat /var/log/kit-apt.err; exit 1; }
 fi
 if ! docker info >/dev/null 2>&1; then
   pgrep -x dockerd >/dev/null 2>&1 || { rm -f /var/run/docker.pid; setsid dockerd >>/var/log/dockerd.log 2>&1 < /dev/null & }

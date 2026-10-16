@@ -22,10 +22,12 @@ const PASSWORD_MIN = 14;
 
 interface LocalLoginFormProps {
   returnTo: string;
+  /** false = AUTH_MFA=off: no authenticator step is shown (the server skips it). */
+  mfa?: boolean;
 }
 
 /** Local sign-in: password → authenticator (enrol on first use) → forced password change when required. */
-export function LocalLoginForm({ returnTo }: LocalLoginFormProps) {
+export function LocalLoginForm({ returnTo, mfa = true }: LocalLoginFormProps) {
   const [view, setView] = useState<View>({ step: "password" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,7 +57,7 @@ export function LocalLoginForm({ returnTo }: LocalLoginFormProps) {
 
   return (
     <div className="space-y-5">
-      <StepIndicator view={view} />
+      <StepIndicator view={view} mfa={mfa} />
       {error && <Alert tone="bad">{error}</Alert>}
       {view.step === "password" && <PasswordStep busy={busy} onSubmit={(upn, password) => send("/api/auth/password", { upn, password, returnTo })} />}
       {view.step === "verify" && (
@@ -79,13 +81,13 @@ export function LocalLoginForm({ returnTo }: LocalLoginFormProps) {
   );
 }
 
-function StepIndicator({ view }: { view: View }) {
+function StepIndicator({ view, mfa }: { view: View; mfa: boolean }) {
   const steps = [
     { key: "password", label: "Password", icon: KeyRound },
-    { key: "mfa", label: "Authenticator", icon: Smartphone },
+    ...(mfa ? [{ key: "mfa", label: "Authenticator", icon: Smartphone }] : []),
     ...(view.step === "change-password" ? [{ key: "change-password", label: "New password", icon: ShieldCheck }] : []),
   ];
-  const current = view.step === "password" ? 0 : view.step === "change-password" ? 2 : 1;
+  const current = view.step === "password" ? 0 : view.step === "change-password" ? steps.length - 1 : 1;
   return (
     <ol className="flex items-center gap-2 text-xs" aria-label="Sign-in steps">
       {steps.map((s, i) => {
