@@ -260,6 +260,27 @@ describe("Windows updates (legacy WSUS banks: DEPLOY_WINDOWS)", () => {
     expect(all[1]).toMatchObject({ status: "QUEUED", attempts: 1, deploymentId: job.deploymentId, expiresAt: job.expiresAt });
     expect((await prisma.deployment.findFirstOrThrow()).status).toBe("SENDING");
   });
+
+  it("Tactical natsdown: plain-words note, retried beyond MAX_JOB_ATTEMPTS while the window lasts, at most 5 min apart", async () => {
+    const c = await connector(5);
+    const win = await prisma.patch.create({ data: { kind: "WINDOWS", externalId: GUID, kb: "KB5000001", title: "KB5000001", severity: "CRITICAL" } });
+    await deploying(c, 1, [win.id]);
+    await produceConnectorDeployments();
+    const natsdown = "Tactical cannot reach its NATS message bus (natsdown): the script was not sent to the PC; restart the trmm-nats container on the site: natsdown";
+    let [job] = await installJobs();
+    // generations 1..6 (MAX_JOB_ATTEMPTS = 5 would have failed it already)
+    for (let gen = 1; gen <= 6; gen++) {
+      const before = Date.now();
+      await post(c, job.id, { ok: false, error: natsdown, retryable: true });
+      const d = await prisma.deployment.findFirstOrThrow();
+      expect(d).toMatchObject({ status: "SENDING", note: `Tactical messaging down at the site — retrying automatically (retry ${gen} scheduled)` });
+      expect(d.nextAttemptAt.getTime() - before).toBeLessThanOrEqual(5 * 60_000 + 1000);
+      await pumpConnector(c.tenantId, c.id, new Date(d.nextAttemptAt.getTime() + 1000));
+      const all = await installJobs();
+      job = all[all.length - 1];
+      expect(job).toMatchObject({ status: "QUEUED", attempts: gen });
+    }
+  });
 });
 
 describe("routing", () => {

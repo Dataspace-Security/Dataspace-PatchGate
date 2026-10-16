@@ -14,6 +14,7 @@ import type { Heartbeat } from "./protocol.ts";
 import { SiemRelay } from "./siem/relay.ts";
 import { parseSiemUrl } from "./siem/syslog.ts";
 import { createTacticalClient, type TacticalClient } from "./tactical/client.ts";
+import { observeTactical, TacticalHealthTracker } from "./tactical/health.ts";
 import { AbortedError, backoffDelay, sleep } from "./util/backoff.ts";
 import { sweepAtomicTemps } from "./util/fsx.ts";
 import { errorMessage, type Logger } from "./util/log.ts";
@@ -75,14 +76,18 @@ export async function startService(cfg: EnrolledConfig, opts: ServiceOptions): P
       privateKey,
       timeoutMs: cfg.server.requestTimeoutMs,
     });
-  const tactical =
+  // Every Tactical call feeds the health the heartbeat reports (ok / natsdown / unreachable + since).
+  const tacticalHealth = new TacticalHealthTracker({ healthFile: cfg.tactical.healthFile, log: log.child({ component: "tactical-health" }) });
+  const tactical = observeTactical(
     opts.tactical ??
-    createTacticalClient({
-      baseUrl: cfg.tactical.url,
-      apiKey: await loadTacticalApiKey(cfg),
-      timeoutMs: cfg.tactical.timeoutMs,
-      ca: await readOptional(cfg.tactical.caFile),
-    });
+      createTacticalClient({
+        baseUrl: cfg.tactical.url,
+        apiKey: await loadTacticalApiKey(cfg),
+        timeoutMs: cfg.tactical.timeoutMs,
+        ca: await readOptional(cfg.tactical.caFile),
+      }),
+    tacticalHealth,
+  );
 
   const journal = await Journal.open(join(cfg.stateDir, "journal.jsonl"), {
     retentionDays: cfg.limits.journalRetentionDays,
@@ -232,6 +237,7 @@ export async function startService(cfg: EnrolledConfig, opts: ServiceOptions): P
       tactical: tacticalStatus,
       siem: siem ? siem.status() : { configured: false, lastForwardedSeq: null, error: null },
       guard: guard.status(),
+      tacticalHealth: await tacticalHealth.snapshot(),
     };
     try {
       const r = await pg.heartbeat(hb, stopAll.signal);

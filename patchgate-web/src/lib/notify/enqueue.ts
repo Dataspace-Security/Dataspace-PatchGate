@@ -35,6 +35,8 @@ export type NotifyInput =
   | { event: "AUDIT_CHAIN_BROKEN"; chain: string; chainTenantId: string | null; problem: string | null }
   | { event: "SIEM_EXPORT_STALE"; chain: string; chainTenantId: string | null; pending: number; minutesSinceExport: number | null }
   | { event: "TACTICAL_OUT_OF_BAND"; tenantId: string; connectorId: string; count: number; summary: string }
+  | { event: "TACTICAL_UNHEALTHY"; tenantId: string; connectorId: string; state: string; since: Date | null; detail: string | null; watchdogRestarts: number | null }
+  | { event: "TACTICAL_RECOVERED"; tenantId: string; connectorId: string; unhealthyMinutes: number }
   | { event: "APPROVAL_SETTING_CHANGED"; tenantId: string; approvalRequired: boolean; actor: string }
   | { event: AccountEvent; userId: string; actor?: string | null; until?: Date | null };
 
@@ -191,6 +193,21 @@ async function prepare(tx: Tx, input: NotifyInput): Promise<Prepared | null> {
         tenantId: input.tenantId,
         facts: { bankName: await bankName(tx, input.tenantId), connectorId: input.connectorId, connectorName: c.name, total: input.count, problem: input.summary },
         // Platform admins + the bank's admins; both scopes' webhooks (the bank's SIEM also gets the audit events).
+        spec: { bankRoles: ["ADMIN"], platformRoles: ["ADMIN"], webhooks: { bank: true, platform: true } },
+      };
+    }
+    case "TACTICAL_UNHEALTHY":
+    case "TACTICAL_RECOVERED": {
+      const c = await tx.connector.findFirst({ where: { id: input.connectorId, tenantId: input.tenantId }, select: { name: true } });
+      if (!c) return null;
+      const extra: MessageFacts =
+        input.event === "TACTICAL_UNHEALTHY"
+          ? { healthState: input.state, healthSince: input.since, healthDetail: input.detail, watchdogRestarts: input.watchdogRestarts }
+          : { unhealthyMinutes: input.unhealthyMinutes };
+      return {
+        tenantId: input.tenantId,
+        facts: { bankName: await bankName(tx, input.tenantId), connectorId: input.connectorId, connectorName: c.name, ...extra },
+        // Same audience as connector offline / Tactical out-of-band: the bank's and the platform's admins.
         spec: { bankRoles: ["ADMIN"], platformRoles: ["ADMIN"], webhooks: { bank: true, platform: true } },
       };
     }

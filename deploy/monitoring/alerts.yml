@@ -73,6 +73,14 @@ groups:
         annotations:
           summary: "Connector {{ $labels.connector }} of {{ $labels.bank }} offline for more than 4 h"
           description: "P1 if a maintenance window is open for this site."
+      - alert: PatchGateTacticalMessagingDown
+        expr: max by (bank, connector) (patchgate_connector_tactical_unhealthy_seconds) > 300
+        for: 1m
+        labels: { severity: critical, priority: P1 }
+        annotations:
+          summary: "Tactical at {{ $labels.connector }} of {{ $labels.bank }} cannot reach its PCs for {{ $value | humanizeDuration }}"
+          description: "natsdown or unreachable (patchgate_connector_tactical_health). The site watchdog restarts trmm-nats every minute with back-off; PatchGate also sends TACTICAL_UNHEALTHY."
+          runbook: "docs/RUNBOOK.md \"Tactical messaging down\""
       - alert: PatchGateJobQueuedTooLong
         expr: max by (bank) (patchgate_jobs_oldest_queued_age_seconds) > 3600
         for: 5m

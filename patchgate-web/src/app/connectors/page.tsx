@@ -10,6 +10,7 @@ import { canWrite } from "@/lib/auth/roles";
 import { listTacticalActivity } from "@/lib/connector/tactical-activity";
 import { TacticalActivityCard } from "./tactical-activity";
 import { LiveRefresh } from "@/components/live-refresh";
+import { TACTICAL_UNHEALTHY_AFTER_MS, tacticalHealthLabel, tacticalHealthView, unhealthyForMs } from "@/lib/connector/tactical-health-rules";
 
 function fmtBytes(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
@@ -28,11 +29,36 @@ function StatusBadge({ c }: { c: ConnectorView }) {
   return c.online ? <Badge tone="good">online</Badge> : <Badge tone="bad">offline</Badge>;
 }
 
+function minutes(ms: number): string {
+  const m = Math.floor(ms / 60_000);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+/** Tactical health badge: ok / messaging down (NATS) / unreachable, since when, the site watchdog's restarts. */
+function TacticalHealthBadge({ c, now }: { c: ConnectorView; now: Date }) {
+  const h = tacticalHealthView(c.heartbeat);
+  if (!h || !h.reported) return null;
+  if (h.state === "ok") return <Badge tone="good">Tactical healthy</Badge>;
+  const forMs = unhealthyForMs(h, now);
+  return (
+    <div className="space-y-0.5">
+      <Badge tone={forMs > TACTICAL_UNHEALTHY_AFTER_MS ? "bad" : "warn"}>Tactical {tacticalHealthLabel(h.state)}</Badge>
+      <div className="text-xs text-danger">
+        {h.since ? `for ${minutes(forMs)}` : "since unknown"}
+        {h.state === "natsdown" && " — no PC reachable; retrying automatically"}
+      </div>
+      {h.watchdogRestarts !== null && <div className="text-xs text-muted">site watchdog: {h.watchdogRestarts} restart(s) in the last hour</div>}
+      {h.detail && <div className="max-w-[16rem] truncate text-xs text-muted" title={h.detail}>{h.detail}</div>}
+    </div>
+  );
+}
+
 function TacticalCell({ c }: { c: ConnectorView }) {
   const t = c.heartbeat?.tactical;
   if (!t) return <span className="text-muted">—</span>;
   return (
     <div className="space-y-0.5">
+      <TacticalHealthBadge c={c} now={new Date()} />
       {t.reachable ? <Badge tone="good">reachable</Badge> : <Badge tone="bad">unreachable</Badge>}
       {typeof t.agents === "number" && <div className="text-xs text-muted">{t.agents} {t.agents === 1 ? "agent" : "agents"} in Tactical</div>}
       {t.error && <div className="max-w-[16rem] truncate text-xs text-danger" title={t.error}>{t.error}</div>}
@@ -120,6 +146,12 @@ async function ConnectorsView() {
   // Platform auditors see the unused codes list too (hashes only, never a code); only admins create codes.
   const [banks, pending] = admin ? await Promise.all([listActiveBanks(), listPendingEnrollments()]) : platform && isPlatformReader(user) ? [[], await listPendingEnrollments()] : [[], []];
   const offline = rows.filter((c) => c.status === "ACTIVE" && !c.online);
+  // Tactical messaging down / unreachable at an online site (heartbeat.tacticalHealth): no PC reachable.
+  const tacticalUnhealthy = rows.filter((c) => {
+    if (c.status !== "ACTIVE" || !c.online) return false;
+    const h = tacticalHealthView(c.heartbeat);
+    return !!h && h.reported && h.state !== "ok";
+  });
   // Tactical seal: out-of-band activity (ADMIN + AUDITOR read; ADMIN acknowledges)
   const activity = await listTacticalActivity(platform ? { kind: "platform" } : { kind: "tenant", tenantId: user.tenantId! });
 
@@ -137,6 +169,12 @@ async function ConnectorsView() {
       {activity.unacknowledged > 0 && (
         <Alert tone="bad">
           {activity.unacknowledged} action(s) in a site&apos;s Tactical outside PatchGate — see “Tactical activity” below.
+        </Alert>
+      )}
+      {tacticalUnhealthy.length > 0 && (
+        <Alert tone="bad">
+          Tactical cannot reach its PCs at: {tacticalUnhealthy.map((c) => `${c.tenantName} / ${c.name} (${tacticalHealthLabel(tacticalHealthView(c.heartbeat)!.state)})`).join(", ")}.
+          Deployments wait and retry automatically; the site&apos;s watchdog restarts Tactical&apos;s message bus (RUNBOOK “Tactical messaging down”).
         </Alert>
       )}
       {offline.length > 0 && (

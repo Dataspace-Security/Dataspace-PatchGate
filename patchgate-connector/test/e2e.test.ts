@@ -193,6 +193,30 @@ describe("connector end-to-end", () => {
     expect(svc!.cacheServer.stats().servedTotal).toBeGreaterThanOrEqual(2);
   });
 
+  it("Tactical natsdown: the job is retryable and the heartbeat reports tacticalHealth natsdown; the watchdog's ok clears it", async () => {
+    tactical.onRunScript = async () => "natsdown";
+    try {
+      const job = pg.makeJob(connectorId, "DEPLOY_PACKAGE", { agentId: PC, package: pkg() });
+      pg.enqueue(job);
+      const res = await waitFor(() => pg.results.get(job.id));
+      expect(res).toMatchObject({ ok: false, retryable: true });
+      expect(res).not.toHaveProperty("outcomeUnknown");
+      const hb = await waitFor(() => pg.heartbeats.find((h) => h.tacticalHealth?.state === "natsdown"));
+      expect(hb.tacticalHealth).toMatchObject({ state: "natsdown", since: expect.any(String), watchdog: null });
+      expect(Date.parse(hb.tacticalHealth!.since!)).toBeLessThanOrEqual(Date.now());
+      // the site watchdog (tactical-health.json next to connector.json) later sees nats-server running again
+      await writeFile(
+        join(dir, "tactical-health.json"),
+        JSON.stringify({ v: 1, nats: "ok", since: null, checkedAt: new Date(Date.now() + 1000).toISOString(), restartsLastHour: 1, lastRestartAt: new Date().toISOString(), detail: "recovered by the watchdog" }),
+      );
+      const after = pg.heartbeats.length;
+      const ok = await waitFor(() => pg.heartbeats.slice(after).find((h) => h.tacticalHealth?.state === "ok"));
+      expect(ok.tacticalHealth?.watchdog).toMatchObject({ nats: "ok", restartsLastHour: 1 });
+    } finally {
+      tactical.onRunScript = undefined;
+    }
+  });
+
   it("every request the connector made passed signature, timestamp and nonce checks", () => {
     expect(pg.authFailures).toEqual([]);
     expect(pg.nonces.size).toBeGreaterThan(5);

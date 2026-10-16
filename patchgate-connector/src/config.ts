@@ -52,6 +52,11 @@ export const tacticalSchema = z.object({
   /** Offline scans against wsusscn2.cab take minutes (first run also copies ~700 MB from the cache). */
   wuScanTimeoutSec: positiveInt.min(300).max(7200).default(3600),
   wuInstallTimeoutSec: positiveInt.min(300).max(7200).default(3600),
+  /**
+   * Health file written by the site's Tactical NATS watchdog (installers/site/tactical/tactical-watchdog.sh);
+   * reported in the heartbeat. Default: tactical-health.json next to this config file (missing = no watchdog).
+   */
+  healthFile: filePath.optional(),
   /** How often the heartbeat refreshes Tactical reachability + agent count. */
   statusIntervalSec: positiveInt.default(300),
   /** Parallel Tactical calls inside one SCAN/COLLECT batch. */
@@ -185,7 +190,12 @@ export function parseConfig(raw: unknown, baseDir: string): ConnectorConfig {
     stateDir,
     server: c.server ? { ...c.server, caFile: absOpt(c.server.caFile) } : undefined,
     identity: c.identity ? { ...c.identity, privateKeyFile: abs(c.identity.privateKeyFile) } : undefined,
-    tactical: { ...c.tactical, apiKeyFile: absOpt(c.tactical.apiKeyFile), caFile: absOpt(c.tactical.caFile) },
+    tactical: {
+      ...c.tactical,
+      apiKeyFile: absOpt(c.tactical.apiKeyFile),
+      caFile: absOpt(c.tactical.caFile),
+      healthFile: abs(c.tactical.healthFile ?? "tactical-health.json"),
+    },
     cache: {
       ...c.cache,
       dir: c.cache.dir ? abs(c.cache.dir) : join(stateDir, "cache"),

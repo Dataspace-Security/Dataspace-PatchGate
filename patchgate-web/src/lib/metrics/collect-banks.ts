@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { isOnline } from "@/lib/connector/policy";
+import { tacticalHealthView, unhealthyForMs } from "@/lib/connector/tactical-health-rules";
 import type { Tx } from "@/lib/tenancy/db";
 import type { ComplianceOps, ConnectorOps, JobCount, OutboxCount } from "./types";
 
@@ -31,13 +32,20 @@ function obj(v: unknown): Record<string, unknown> | null {
 }
 
 /** Fields of the stored heartbeat the dashboards need (stored JSON is treated as untrusted). */
-export function heartbeatFacts(raw: unknown): Pick<ConnectorOps, "cacheFreeBytes" | "tacticalReachable" | "siemConfigured" | "siemOk"> {
+export function heartbeatFacts(
+  raw: unknown,
+  now = new Date(),
+): Pick<ConnectorOps, "cacheFreeBytes" | "tacticalReachable" | "tacticalHealth" | "tacticalUnhealthySec" | "siemConfigured" | "siemOk"> {
   const hb = obj(raw);
   const cache = obj(hb?.cache);
   const tactical = obj(hb?.tactical);
   const siem = obj(hb?.siem);
   const free = cache?.freeBytes;
+  const health = tacticalHealthView(raw);
+  const reported = health?.reported ? health : null;
   return {
+    tacticalHealth: reported?.state ?? null,
+    tacticalUnhealthySec: Math.round(unhealthyForMs(reported, now) / 1000),
     cacheFreeBytes: typeof free === "number" && Number.isFinite(free) && free >= 0 ? free : null,
     tacticalReachable: typeof tactical?.reachable === "boolean" ? tactical.reachable : null,
     siemConfigured: typeof siem?.configured === "boolean" ? siem.configured : null,
@@ -70,7 +78,7 @@ export async function loadConnectors(tx: Tx, now: Date): Promise<ConnectorsByBan
       lastSeenAt: r.lastSeenAt,
       lastSeenAgeSec: ageSec(r.lastSeenAt, now),
       version: r.version,
-      ...heartbeatFacts(r.heartbeat),
+      ...heartbeatFacts(r.heartbeat, now),
     });
     active.set(r.tenantId, list);
   }

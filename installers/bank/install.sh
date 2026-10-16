@@ -807,6 +807,11 @@ self_check() {
   if [ "$code" = 200 ]; then ok "https://patchgate.$DOMAIN/login -> 200"; else fails=$((fails + 1)); warn "https://patchgate.$DOMAIN/login -> ${code:-no answer}"; fi
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$BANK_DIR/tls/bank-ca.pem" --resolve "pg-cache.$DOMAIN:8443:$LAN_IP" "https://pg-cache.$DOMAIN:8443/repo/" || true)"
   case "$code" in 2*|3*|4*) ok "https://pg-cache.$DOMAIN:8443/repo/ -> $code (package cache answers, TLS valid)" ;; *) warn "package cache -> ${code:-no answer}" ;; esac
+  # Self-healing after a reboot: install-site.sh installs the Tactical NATS watchdog (systemd timer, like
+  # patchgate-bank-firewall.service; cron where there is no systemd). RUNBOOK "Tactical messaging down".
+  if systemctl is-active --quiet patchgate-tactical-watchdog.timer 2>/dev/null; then ok "Tactical NATS watchdog active (patchgate-tactical-watchdog.timer)"
+  elif [ -f /etc/cron.d/patchgate-tactical-watchdog ]; then ok "Tactical NATS watchdog active (cron)"
+  else warn "Tactical NATS watchdog not active: trmm-nats is not restarted after a reboot (re-run with --upgrade)"; fi
 
   step "Egress lockdown proof (raw IP 1.1.1.1/140.82.112.3/8.8.8.8 + DNS github.com must FAIL)"
   EGRESS="proven"

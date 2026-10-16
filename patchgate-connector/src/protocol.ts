@@ -22,6 +22,8 @@
  * 4. Packages: GET /api/connector/v1/packages/{sha256} → bytes; connector re-hashes before caching.
  * 5. Audit relay: GET /api/connector/v1/audit?after={seq}&limit=500 → this bank's chain records (each with prevHash) + head.
  * 6. Heartbeat: POST /api/connector/v1/heartbeat { version, cacheBaseUrl, cache: {...}, tactical: {...} }
+ *    + tacticalHealth (optional): ok | natsdown | unreachable since <ISO>, from the connector's own Tactical calls
+ *    and the site's NATS watchdog (installers/site/tactical/tactical-watchdog.sh). PatchGate alerts after 5 min.
  * 7. Tactical seal: TACTICAL_AUDIT_SYNC jobs read Tactical's audit log (read-only) and report every action
  *    NOT done by the service account (dashboard logins, script runs, agent commands, policy/user changes).
  *    Catch-up / backstop of §8.
@@ -433,6 +435,27 @@ export type JobResult = z.infer<typeof jobResultSchema>;
 // Heartbeat + audit relay
 // ---------------------------------------------------------------------------------------------
 
+/** States of a site's Tactical as the connector reports them (heartbeat.tacticalHealth). */
+export const TACTICAL_HEALTH_STATES = ["ok", "natsdown", "unreachable"] as const;
+
+export const tacticalHealthSchema = z.object({
+  // natsdown: Tactical answers but cannot reach its NATS message bus (no PC reachable; nothing is sent).
+  // unreachable: the connector gets no (valid) answer from Tactical's API at all.
+  state: z.enum(TACTICAL_HEALTH_STATES),
+  // When the current state began (ISO, connector / site clock); null = unknown.
+  since: z.string().max(40).nullish(),
+  detail: shortText.nullish(),
+  // The site's host watchdog (null = not installed / no fresh health file).
+  watchdog: z
+    .object({
+      nats: z.enum(["ok", "down", "starting", "unknown"]),
+      checkedAt: z.string().max(40),
+      restartsLastHour: z.number().int().min(0).max(1000),
+      lastRestartAt: z.string().max(40).nullish(),
+    })
+    .nullish(),
+});
+
 export const heartbeatSchema = z.object({
   version: z.string().max(40),
   cacheBaseUrl: z.url().max(300).nullish(),
@@ -451,8 +474,11 @@ export const heartbeatSchema = z.object({
       error: shortText.nullish(),
     })
     .optional(),
+  // Optional: older connectors omit it (PatchGate then only knows tactical.reachable).
+  tacticalHealth: tacticalHealthSchema.optional(),
 });
 export type Heartbeat = z.infer<typeof heartbeatSchema>;
+export type TacticalHealth = z.infer<typeof tacticalHealthSchema>;
 
 export const heartbeatResponseSchema = z.object({
   serverTime: z.string(),

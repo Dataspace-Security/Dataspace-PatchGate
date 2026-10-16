@@ -165,6 +165,14 @@ function attentionItems(c: Counts, totals: ComplianceBuckets, fleet: FleetSource
       href: "/connectors",
     },
     health.tacticalDown.length > 0 && { key: "tactical-down", priority: 1, tone: "bad", text: `Tactical is unreachable from ${health.tacticalDown.map((t) => t.name).join(", ")}`, href: "/connectors" },
+    health.tacticalMessagingDown.length > 0 && {
+      key: "tactical-messaging-down",
+      priority: 1,
+      tone: "bad",
+      text: `Tactical messaging down at ${health.tacticalMessagingDown.map((t) => t.name).join(", ")} — no PC can be reached`,
+      hint: "Deployments wait and retry automatically; the site's watchdog restarts Tactical's message bus.",
+      href: "/connectors",
+    },
     ...top.slice(0, 2).map((m, i) => ({
       key: `patch-${m.patchId}`,
       priority: m.severity === "CRITICAL" ? 2 : 6,

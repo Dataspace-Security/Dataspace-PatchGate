@@ -4,6 +4,7 @@
  * (story.test.ts) and shared by the page data functions in this folder.
  */
 import { CronExpressionParser } from "cron-parser";
+import { TACTICAL_MESSAGING_DOWN_NOTE } from "@/lib/connector/policy";
 
 export type Severity = "CRITICAL" | "IMPORTANT" | "MODERATE" | "LOW" | "UNSPECIFIED";
 export type Tone = "neutral" | "info" | "warn" | "good" | "bad" | "busy";
@@ -194,6 +195,7 @@ export type StageKey =
   | "sent-to-site"
   | "installing"
   | "retrying"
+  | "tactical-down"
   | "preparing"
   | "awaiting-confirmation"
   | "outcome-unknown"
@@ -258,6 +260,10 @@ function sendingStage(input: StageInput): Stage {
   const note = input.note ?? "";
   if (note.startsWith("waiting for the site cache")) return stage("caching", "Downloading to bank (site cache)", "busy", "The package is copied to the bank once; PCs install from there.");
   if (note.startsWith("waiting for Windows update files")) return stage("waiting-files", "Waiting for Microsoft files", "busy", short(note.replace(/^waiting for Windows update files:\s*/, "")) || null);
+  const natsDown = note.startsWith(TACTICAL_MESSAGING_DOWN_NOTE) ? /\(retry (\d+) scheduled\)/.exec(note) : null;
+  if (natsDown) {
+    return stage("tactical-down", "Waiting: Tactical messaging down at the site", "warn", `Retrying automatically (attempt ${Number(natsDown[1]) + 1}); the site's watchdog restarts Tactical's message bus within minutes.`);
+  }
   const retry = /^retry (\d+) scheduled after: ([\s\S]*)$/.exec(note);
   if (retry) return stage("retrying", `Retrying (attempt ${Number(retry[1]) + 1})`, "warn", `Last try: ${short(retry[2])}`);
   if (input.job?.status === "DELIVERED") return stage("installing", "Installing", "busy", "The bank's connector is running the install on the PC.");

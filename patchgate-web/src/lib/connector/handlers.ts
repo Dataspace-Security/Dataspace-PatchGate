@@ -8,7 +8,7 @@ import { onCacheJobFinished, onInstallJobFailed, onInstallJobOutcomeUnknown, onI
 import { applyCollect, applyScan } from "./handlers-inventory";
 import { applySyncAgents } from "./handlers-agents";
 import { applyTacticalAudit, checkApprovalDrift } from "./tactical-activity";
-import { MAX_JOB_ATTEMPTS, isInstallJob, retryDelayMs } from "./policy";
+import { MAX_JOB_ATTEMPTS, MAX_NATS_DOWN_ATTEMPTS, NATS_DOWN_RETRY_MAX_MS, isInstallJob, isTacticalNatsDown, retryDelayMs } from "./policy";
 import { enqueueJob } from "./queue";
 import { jobPayloadSchemas, type JobResult, type JobType, type resultSchemas } from "./protocol";
 
@@ -95,9 +95,9 @@ export async function applyJobOutcome(job: StoredJob, res: JobResult, now: Date)
  * Retry window for a failed job: deployments keep their maintenance-window end; other jobs get a fresh
  * validity period of the same length as the original.
  */
-function retryTimes(job: StoredJob, now: Date): { notBefore: Date; expiresAt: Date } | null {
+function retryTimes(job: StoredJob, now: Date, maxDelayMs = Infinity): { notBefore: Date; expiresAt: Date } | null {
   if (!Object.hasOwn(jobPayloadSchemas, job.type)) return null;
-  const notBefore = new Date(now.getTime() + retryDelayMs(job.attempts));
+  const notBefore = new Date(now.getTime() + Math.min(retryDelayMs(job.attempts), maxDelayMs));
   const expiresAt = isInstallJob(job.type) || job.deploymentId ? job.expiresAt : new Date(notBefore.getTime() + Math.max(15 * 60_000, job.expiresAt.getTime() - job.notBefore.getTime()));
   // Need a meaningful amount of time left to run.
   return expiresAt.getTime() - notBefore.getTime() >= 5 * 60_000 ? { notBefore, expiresAt } : null;
@@ -105,7 +105,10 @@ function retryTimes(job: StoredJob, now: Date): { notBefore: Date; expiresAt: Da
 
 async function onJobFailed(job: StoredJob, error: string, retryable: boolean, now: Date): Promise<void> {
   const generation = job.attempts + 1;
-  const times = retryable && generation < MAX_JOB_ATTEMPTS ? retryTimes(job, now) : null;
+  // Tactical's NATS down: nothing reached the PC; keep retrying (bounded by the window) until the site recovers.
+  const natsDown = retryable && isTacticalNatsDown(error);
+  const maxAttempts = natsDown ? MAX_NATS_DOWN_ATTEMPTS : MAX_JOB_ATTEMPTS;
+  const times = retryable && generation < maxAttempts ? retryTimes(job, now, natsDown ? NATS_DOWN_RETRY_MAX_MS : Infinity) : null;
   if (times && isInstallJob(job.type) && job.deploymentId) {
     // The pump queues the retry when it is due, inside the connector's install cap.
     await scheduleInstallRetry(job, error, times.notBefore, generation);

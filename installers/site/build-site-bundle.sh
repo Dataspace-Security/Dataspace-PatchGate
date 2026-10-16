@@ -14,6 +14,7 @@
 #       images/IMAGES.lock               "<tag> <image@sha256:digest>" of every public image (for --online)
 #       docker/                          static Docker Engine + Compose plugin (used only if Docker is missing)
 #       tactical/                        Tactical's official docker-compose.yml + our site override + provisioning
+#                                        + tactical-watchdog.sh (host NATS watchdog, systemd timer / cron)
 #                                        + meshcentral-offline/Dockerfile (built on site in --online mode)
 #       connector/write-config.mjs       connector.json generator (runs inside the connector image)
 #       endpoint/*.ps1                   the 3 PatchGate PowerShell scripts registered in Tactical
@@ -180,7 +181,8 @@ fi
 step "Files"
 cp "$HERE/install-site.sh" "$STAGE/install-site.sh"
 cp "$TACTICAL_COMPOSE" "$STAGE/tactical/docker-compose.yml"
-cp "$HERE/tactical/docker-compose.site.yml" "$HERE/tactical/provision-site.py" "$HERE/tactical/break-glass.py" "$STAGE/tactical/"
+cp "$HERE/tactical/docker-compose.site.yml" "$HERE/tactical/provision-site.py" "$HERE/tactical/break-glass.py" "$HERE/tactical/tactical-watchdog.sh" "$STAGE/tactical/"
+chmod 0755 "$STAGE/tactical/tactical-watchdog.sh"
 cp "$HERE/connector/write-config.mjs" "$STAGE/connector/"
 for s in Install-PatchGatePackage.ps1 Invoke-PatchGateWuScan.ps1 Install-PatchGateWinUpdate.ps1; do
   cp "$REPO/patchgate-web/scripts/endpoint/$s" "$STAGE/endpoint/$s"

@@ -9,6 +9,7 @@
 #        curl -fsSL https://<patchgate>/install/site.sh | sudo bash -s -- --code <CODE> --fingerprint <SHA256>
 #      (downloads the bundle over https with the one-time enrolment code and verifies SHA256SUMS first)
 #   C. maintenance:  --status | --upgrade <bundle.tar.gz|dir> | --pc-token [hours] | --uninstall [--purge]
+#                    (install/upgrade also set up the Tactical NATS watchdog: systemd timer, cron fallback)
 #                    --break-glass on|off  (emergency dashboard login for tacticaladmin; alerted in PatchGate)
 #   ONLINE variant (site VM with internet): add --online. Public images (Tactical, mongo, redis, postgres,
 #   socat) are pulled from Docker Hub pinned to the exact digests in images/IMAGES.lock (the same bits as the
@@ -733,7 +734,8 @@ echo yes; }')"
 
 # Upstream start race (official images, not modified): trmm-nats can start nats-server before tactical-init has
 # (re)written nats-rmm.conf; supervisor then gives up and Tactical answers every script run with "natsdown" (no PC
-# reachable). Restart trmm-nats until nats-server runs. After a VM reboot run --status (it reports this state).
+# reachable). Restart trmm-nats until nats-server runs. After a VM reboot the watchdog below does the same every
+# minute (tactical/tactical-watchdog.sh); --status reports both.
 # (no pgrep in a future image = cannot tell = assume running; never block the install on the probe itself)
 nats_running() { docker exec trmm-nats sh -c 'command -v pgrep >/dev/null 2>&1 || exit 0; pgrep -x nats-server >/dev/null' 2>/dev/null; }
 ensure_nats() {
@@ -745,6 +747,93 @@ ensure_nats() {
     sleep 30
   done
   nats_running
+}
+
+# ------------------------------------------------------------------ Tactical NATS watchdog (self-healing)
+# Same probe as nats_running, run every minute on the host (systemd timer; cron where there is no systemd):
+# restarts ONLY trmm-nats, with back-off, logs to journald/syslog and writes etc/tactical-health.json, which the
+# connector reports to PatchGate (Connectors page, critical alert after 5 min). RUNBOOK "Tactical messaging down".
+WATCHDOG_UNIT="patchgate-tactical-watchdog"
+WATCHDOG_CRON="/etc/cron.d/patchgate-tactical-watchdog"
+WATCHDOG="not installed"
+watchdog_script() { printf '%s' "$SITE_DIR/runtime/tactical/tactical-watchdog.sh"; }
+# install-site.sh recreates containers: the watchdog leaves them alone until we exit (stale after 2 h).
+watchdog_pause() {
+  [ -d "$SITE_DIR/state" ] || return 0
+  touch "$SITE_DIR/state/watchdog.pause"
+  trap 'rm -f "$SITE_DIR/state/watchdog.pause"' EXIT
+}
+install_watchdog() {
+  step "Tactical NATS watchdog (self-healing after a reboot)"
+  local wd; wd="$(watchdog_script)"
+  if [ ! -f "$wd" ]; then
+    warn "this bundle has no tactical/tactical-watchdog.sh: Tactical's NATS is NOT watched (upgrade to a newer bundle)"
+    return 0
+  fi
+  chmod 0750 "$wd"
+  if [ -d /run/systemd/system ]; then
+    cat > "/etc/systemd/system/$WATCHDOG_UNIT.service" <<UNIT
+[Unit]
+Description=PatchGate site: restart Tactical's NATS message bus (trmm-nats) when it is down
+Documentation=file:$wd
+After=docker.service
+Wants=docker.service
+[Service]
+Type=oneshot
+Environment=PG_SITE_DIR=$SITE_DIR
+ExecStart=$wd
+TimeoutStartSec=180
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+UNIT
+    cat > "/etc/systemd/system/$WATCHDOG_UNIT.timer" <<UNIT
+[Unit]
+Description=PatchGate site: check Tactical's NATS message bus every minute (from 2 min after boot)
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=$WATCHDOG_UNIT.service
+[Install]
+WantedBy=timers.target
+UNIT
+    rm -f "$WATCHDOG_CRON"
+    systemctl daemon-reload
+    systemctl enable --now "$WATCHDOG_UNIT.timer" >/dev/null 2>&1 || true
+    if systemctl is-active --quiet "$WATCHDOG_UNIT.timer"; then
+      WATCHDOG="systemd timer $WATCHDOG_UNIT.timer (every minute)"; ok "$WATCHDOG; log: journalctl -u $WATCHDOG_UNIT"
+    else
+      warn "watchdog timer did not start (systemctl status $WATCHDOG_UNIT.timer)"; WATCHDOG="timer NOT active"
+    fi
+  elif [ -d /etc/cron.d ]; then
+    printf '# PatchGate site: Tactical NATS watchdog (no systemd on this host). Written by install-site.sh.\n* * * * * root PG_SITE_DIR=%s %s >/dev/null 2>&1\n' "$SITE_DIR" "$wd" > "$WATCHDOG_CRON"
+    chmod 0644 "$WATCHDOG_CRON"
+    WATCHDOG="cron $WATCHDOG_CRON (every minute)"; ok "$WATCHDOG; log: syslog tag patchgate-tactical-watchdog"
+  else
+    warn "no systemd and no cron: run $wd every minute yourself (otherwise Tactical's NATS is not restarted after a reboot)"
+  fi
+}
+remove_watchdog() {
+  if [ -f "/etc/systemd/system/$WATCHDOG_UNIT.timer" ] || [ -f "/etc/systemd/system/$WATCHDOG_UNIT.service" ]; then
+    systemctl disable --now "$WATCHDOG_UNIT.timer" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/$WATCHDOG_UNIT.timer" "/etc/systemd/system/$WATCHDOG_UNIT.service"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    ok "watchdog timer removed"
+  fi
+  if [ -f "$WATCHDOG_CRON" ]; then rm -f "$WATCHDOG_CRON"; ok "watchdog cron entry removed"; fi
+  rm -f "$SITE_DIR/etc/tactical-health.json" 2>/dev/null || true
+}
+watchdog_status() {
+  if [ -f "/etc/systemd/system/$WATCHDOG_UNIT.timer" ]; then
+    if systemctl is-active --quiet "$WATCHDOG_UNIT.timer"; then ok "NATS watchdog timer active ($WATCHDOG_UNIT.timer)"; else warn "NATS watchdog timer NOT active (systemctl enable --now $WATCHDOG_UNIT.timer)"; fi
+  elif [ -f "$WATCHDOG_CRON" ]; then ok "NATS watchdog via cron ($WATCHDOG_CRON)"
+  else warn "NATS watchdog not installed: re-run install-site.sh --upgrade with a current bundle"; fi
+  local h="$SITE_DIR/etc/tactical-health.json"
+  [ -f "$h" ] && info "watchdog health: $(tr -d '\n' < "$h")"
+  [ -f "$SITE_DIR/state/watchdog.pause" ] && warn "watchdog paused ($SITE_DIR/state/watchdog.pause exists; delete it to resume)"
+  return 0
 }
 
 provision_tactical() {
@@ -1000,6 +1089,7 @@ summary() {
     Package cache        https://pg-cache.$SITE_DOMAIN:$CACHE_PORT/repo
     PatchGate            ${SERVER_URL:-not set}   enrolment: $(if enrolled; then echo enrolled; elif [ "$ENROL_FAILED" = 1 ]; then echo FAILED; else echo pending; fi)
     Connector check      $CHECK_RESULT
+    NATS watchdog        $WATCHDOG
     Isolation            $ISOLATION
     Log                  $LOG_FILE
 
@@ -1034,12 +1124,14 @@ do_install() {
   collect_answers
   setup_tls
   install_runtime
+  watchdog_pause
   BUNDLE_VERSION="${BUNDLE_VERSION:-}"; save_state
   start_tactical
   provision_tactical
   write_connector_files
   enrol_connector
   start_connector
+  install_watchdog
   prove_isolation
   write_pc_kit
   save_state
@@ -1103,7 +1195,8 @@ do_break_glass() {
 # Read-only sealed-state self-check (--status).
 seal_status() {
   docker inspect trmm-backend >/dev/null 2>&1 || { warn "Tactical is not running: seal not checked"; return 0; }
-  if nats_running; then ok "Tactical NATS message bus running"; else warn "Tactical NATS message bus NOT running: PCs cannot be reached (fix: docker restart trmm-nats)"; fi
+  if nats_running; then ok "Tactical NATS message bus running"; else warn "Tactical NATS message bus NOT running: PCs cannot be reached (the watchdog restarts it within ~1-2 min; now: docker restart trmm-nats)"; fi
+  watchdog_status
   step "Tactical seal"
   local line; line="$(seal_script check status PATCHGATE_SEAL_CHECK)" || { warn "seal check failed"; return 0; }
   PROV="$(mktemp)"; printf '%s\n' "${line#PATCHGATE_SEAL_CHECK=}" > "$PROV"
@@ -1130,6 +1223,8 @@ do_uninstall() {
     local a=""; printf '    This deletes Tactical (all agents/history), the connector key and cache. Type PURGE: ' >/dev/tty
     IFS= read -r a </dev/tty || true; [ "$a" = PURGE ] || die "not confirmed — nothing deleted"
   fi
+  watchdog_pause
+  remove_watchdog
   if [ -f "$SITE_DIR/site.env" ] && command -v docker >/dev/null 2>&1; then
     set_dc
     if [ "$PURGE" = 1 ]; then "${DC[@]}" down -v --remove-orphans 2>&1 | tail -2 | sed 's/^/    /' || true
@@ -1163,6 +1258,7 @@ main() {
         [ -f "$SITE_DIR/site.env" ] || die "no site installed yet: install first"
         step "Upgrade ${INSTALLED_BUNDLE:-?} -> $BUNDLE_VERSION"
       fi
+      watchdog_pause
       do_install ;;
     status) do_status ;;
     pctoken) do_pc_token ;;

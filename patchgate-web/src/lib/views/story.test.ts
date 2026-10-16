@@ -113,6 +113,12 @@ describe("deployment stage (per PC of a change request)", () => {
     expect(deploymentStage({ ...s, job: { status: "QUEUED", notBefore: NOW } }).label).toBe("Sent to the bank, waiting to start");
     expect(deploymentStage({ ...s, job: { status: "DELIVERED", notBefore: NOW } }).label).toBe("Installing");
     expect(deploymentStage({ ...s, note: "retry 1 scheduled after: agent offline" })).toMatchObject({ label: "Retrying (attempt 2)", detail: "Last try: agent offline" });
+    expect(deploymentStage({ ...s, note: "Tactical messaging down at the site — retrying automatically (retry 3 scheduled)" })).toMatchObject({
+      key: "tactical-down",
+      label: "Waiting: Tactical messaging down at the site",
+      tone: "warn",
+      detail: expect.stringContaining("attempt 4"),
+    });
     expect(deploymentStage({ ...s, note: "waiting for the site cache" }).label).toBe("Downloading to bank (site cache)");
   });
 

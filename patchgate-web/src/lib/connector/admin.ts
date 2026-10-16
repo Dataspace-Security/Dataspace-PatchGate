@@ -10,6 +10,7 @@ import { jobKeyFingerprint, jobSigningPublicKey } from "./keys";
 import { isOnline } from "./policy";
 import { heartbeatSchema, type Heartbeat } from "./protocol";
 import { BUNDLE_KEY_RE, bundleConfig, latestVersion } from "./site-bundle";
+import { tacticalHealthView } from "./tactical-health-rules";
 
 /**
  * Connector administration: platform admins create enrolment codes, revoke connectors and set the bank's
@@ -289,7 +290,9 @@ export async function connectorHealth(tenantId: string, now = new Date()) {
     total: active.length,
     online: active.filter((c) => c.online).length,
     offline: active.filter((c) => !c.online),
-    tacticalDown: active.filter((c) => c.online && c.heartbeat && !c.heartbeat.tactical.reachable),
+    tacticalDown: active.filter((c) => c.online && c.heartbeat && !c.heartbeat.tactical.reachable && tacticalHealthView(c.heartbeat)?.state !== "natsdown"),
+    // Tactical answers but cannot reach its NATS message bus (heartbeat.tacticalHealth): no PC reachable.
+    tacticalMessagingDown: active.filter((c) => c.online && tacticalHealthView(c.heartbeat)?.state === "natsdown"),
     queuedJobs: active.reduce((s, c) => s + c.queuedJobs, 0),
     failedJobs24h: active.reduce((s, c) => s + c.failedJobs24h, 0),
   };

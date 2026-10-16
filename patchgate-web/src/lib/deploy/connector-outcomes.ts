@@ -6,6 +6,7 @@ import { withTenant, type Tx } from "@/lib/tenancy";
 import { log } from "@/lib/log";
 import { handleWuInstallResult } from "@/lib/winupdate/hooks";
 import { enqueueJob, type ExpiredJob } from "@/lib/connector/queue";
+import { TACTICAL_MESSAGING_DOWN_NOTE, isTacticalNatsDown } from "@/lib/connector/policy";
 import type { resultSchemas } from "@/lib/connector/protocol";
 import type { StoredJob } from "@/lib/connector/handlers";
 import { AuditBuffer, WAITING_NOTE_PREFIX, expectedGuidsOfJob, finish, installTypes, progressOf, stopRingIfFailing } from "./connector-state";
@@ -85,7 +86,11 @@ export async function scheduleInstallRetry(job: StoredJob, error: string, retryA
   await withTenant(job.tenantId, (tx) =>
     tx.deployment.updateMany({
       where: { id: deploymentId, tenantId: job.tenantId, status: "SENDING" },
-      data: { nextAttemptAt: retryAt, note: `retry ${generation} scheduled after: ${error}`.slice(0, 2000) },
+      data: {
+        nextAttemptAt: retryAt,
+        // Tactical's NATS bus down at the site: say so plainly (the details are in the job + the connector alert).
+        note: (isTacticalNatsDown(error) ? `${TACTICAL_MESSAGING_DOWN_NOTE} (retry ${generation} scheduled)` : `retry ${generation} scheduled after: ${error}`).slice(0, 2000),
+      },
     }),
   );
 }

@@ -33,7 +33,7 @@ export async function POST(req: Request): Promise<Response> {
         extraSteps: [
           { name: "scanIngest", run: async () => (tactical ? ingestDueEndpoints(tactical) : DIRECT_TACTICAL_NOT_CONFIGURED) },
           { name: "authCleanup", run: () => purgeExpiredAuth() },
-          { name: "notifyWatch", run: async () => { const r = await runNotificationWatch(); return `offline ${r.offline}, online ${r.online}, siem stale ${r.siemStale}`; } },
+          { name: "notifyWatch", run: async () => { const r = await runNotificationWatch(); return `offline ${r.offline}, online ${r.online}, siem stale ${r.siemStale}, tactical unhealthy ${r.tacticalUnhealthy}, recovered ${r.tacticalRecovered}`; } },
           {
             name: "notifyDeliver",
             run: async () => {

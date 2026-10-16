@@ -17,6 +17,22 @@ export const POLL_MAX_INTERVAL_MS = 2_000;
 /** Job generations (first try + retries) before a retryable failure becomes final. */
 export const MAX_JOB_ATTEMPTS = 5;
 
+/**
+ * Tactical answered "natsdown" (its NATS message bus is down): the script never left Tactical, so retrying is
+ * always safe. Such failures are retried while the maintenance window lasts (at most this many generations,
+ * at most NATS_DOWN_RETRY_MAX_MS apart) instead of failing after MAX_JOB_ATTEMPTS: the site's watchdog
+ * restarts NATS within minutes (installers/site/tactical/tactical-watchdog.sh).
+ */
+export const MAX_NATS_DOWN_ATTEMPTS = 30;
+export const NATS_DOWN_RETRY_MAX_MS = 5 * 60_000;
+/** Deployment note while Tactical's messaging is down (the UI shows it as a waiting stage). */
+export const TACTICAL_MESSAGING_DOWN_NOTE = "Tactical messaging down at the site — retrying automatically";
+
+/** A job error caused by Tactical's "natsdown" answer (connector: TacticalError detail "natsdown"). */
+export function isTacticalNatsDown(error: string | null | undefined): boolean {
+  return !!error && /\bnatsdown\b/i.test(error);
+}
+
 /** Jobs that start an installation on a PC — limited per connector by maxConcurrentInstalls. */
 export const INSTALL_JOB_TYPES = ["DEPLOY_WINDOWS", "DEPLOY_PACKAGE", "WU_INSTALL"] as const satisfies readonly JobType[];
 export type InstallJobType = (typeof INSTALL_JOB_TYPES)[number];

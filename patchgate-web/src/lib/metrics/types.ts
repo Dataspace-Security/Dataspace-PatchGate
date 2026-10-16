@@ -1,3 +1,5 @@
+import type { TacticalHealthState } from "@/lib/connector/tactical-health-rules";
+
 /** Operations snapshot: one aggregated picture of every bank + the platform (metrics and /operations). */
 
 export interface ConnectorOps {
@@ -11,6 +13,10 @@ export interface ConnectorOps {
   version: string | null;
   cacheFreeBytes: number | null;
   tacticalReachable: boolean | null;
+  /** heartbeat.tacticalHealth (ok / natsdown / unreachable); null/undefined = not reported (older connector) */
+  tacticalHealth?: TacticalHealthState | null;
+  /** Seconds the site's Tactical has been unhealthy (0 = healthy / unknown) */
+  tacticalUnhealthySec?: number;
   /** Connector → bank SIEM relay: null = no heartbeat / not reported, false = configured with an error */
   siemConfigured: boolean | null;
   siemOk: boolean | null;

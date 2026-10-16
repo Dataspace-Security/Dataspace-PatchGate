@@ -44,6 +44,17 @@ services:
       proxy:
         ipv4_address: ${NGINX_IP}
 
+  tactical-nats:
+    # Visibility only (the image is unchanged; Docker never restarts an "unhealthy" container): `docker ps` and
+    # install-site.sh --status show "unhealthy" when nats-server lost the start-up race after a reboot. The restart
+    # is done by the host watchdog (tactical/tactical-watchdog.sh, systemd timer every minute) with back-off.
+    healthcheck:
+      test: ["CMD-SHELL", "command -v pgrep >/dev/null 2>&1 || exit 0; pgrep -x nats-server >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
   tactical-meshcentral:
     # Offline MeshCentral: the stock image npm-installs modules from the internet at runtime.
     image: patchgate-site/tactical-meshcentral-offline:${VERSION}

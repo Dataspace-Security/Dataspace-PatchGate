@@ -5,6 +5,7 @@ import { log } from "@/lib/log";
 import { auditChains, chainName } from "@/lib/audit/service";
 import { auditExportStatus } from "@/lib/audit/export";
 import { withPlatform, withTenant } from "@/lib/tenancy/db";
+import { watchTacticalHealth } from "@/lib/connector/tactical-health";
 import { enqueueNotification } from "./enqueue";
 
 /**
@@ -14,6 +15,8 @@ import { enqueueNotification } from "./enqueue";
  *    Outages also feed the connector-uptime figures of compliance reports.
  *  - SIEM export stale (same rule as /api/ready siemExport): pending events and no export for > 15 min →
  *    SIEM_EXPORT_STALE once per episode (NotificationAlert row), cleared silently when exports resume.
+ *  - Tactical unhealthy at a site (heartbeat.tacticalHealth natsdown / unreachable) for > 5 min → one critical
+ *    TACTICAL_UNHEALTHY per episode, TACTICAL_RECOVERED when it is ok again (lib/connector/tactical-health.ts).
  * Each state change and its notification are written in one transaction.
  */
 
@@ -24,6 +27,8 @@ export interface WatchResult {
   offline: number;
   online: number;
   siemStale: number;
+  tacticalUnhealthy: number;
+  tacticalRecovered: number;
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -107,5 +112,6 @@ export async function watchSiemExport(): Promise<number> {
 export async function runNotificationWatch(now = new Date()): Promise<WatchResult> {
   const c = await watchConnectors(now);
   const siemStale = await watchSiemExport();
-  return { ...c, siemStale };
+  const t = await watchTacticalHealth(now);
+  return { ...c, siemStale, tacticalUnhealthy: t.raised, tacticalRecovered: t.recovered };
 }

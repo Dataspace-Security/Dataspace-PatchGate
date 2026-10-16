@@ -30,6 +30,12 @@ export interface MessageFacts {
   connectorName?: string;
   lastSeenAt?: Date | null;
   offlineMinutes?: number;
+  /** Tactical health (ok / natsdown / unreachable) */
+  healthState?: string;
+  healthSince?: Date | null;
+  healthDetail?: string | null;
+  watchdogRestarts?: number | null;
+  unhealthyMinutes?: number;
   /** Windows Update lock */
   endpointCount?: number;
   hostnames?: string;
@@ -190,6 +196,30 @@ function layout(event: NotificationEvent, f: MessageFacts): Layout {
         intro:
           "Someone used the site's Tactical RMM directly (dashboard login, script, command, approval or setting change) instead of PatchGate. Check who did it and why; acknowledge it on the Connectors page (RUNBOOK \"Tactical is sealed\").",
         fields: [["Bank", f.bankName], ["Site connector", f.connectorName], ["Actions", f.total], ["Latest", f.problem]],
+        path: "/connectors",
+      };
+    case "TACTICAL_UNHEALTHY":
+      return {
+        subject: `CRITICAL: ${f.healthState === "natsdown" ? "Tactical messaging down" : "Tactical unreachable"} at ${f.connectorName ?? "a site"}${bank(f)}`,
+        intro:
+          f.healthState === "natsdown"
+            ? "The site's Tactical cannot reach its NATS message bus: no PC can be reached, deployments wait and are retried automatically. The site's watchdog restarts trmm-nats every minute (with back-off); if this persists see RUNBOOK \"Tactical messaging down\"."
+            : "The site connector gets no answer from the site's Tactical API: no PC can be reached, deployments wait and are retried. See RUNBOOK \"Tactical messaging down\".",
+        fields: [
+          ["Bank", f.bankName],
+          ["Site connector", f.connectorName],
+          ["State", f.healthState],
+          ["Since", iso(f.healthSince) ?? "unknown"],
+          ["Watchdog restarts (last hour)", f.watchdogRestarts ?? "no watchdog report"],
+          ["Detail", f.healthDetail],
+        ],
+        path: "/connectors",
+      };
+    case "TACTICAL_RECOVERED":
+      return {
+        subject: `Tactical works again at ${f.connectorName ?? "a site"}${bank(f)}`,
+        intro: "The site's Tactical reaches its PCs again; waiting deployments continue automatically.",
+        fields: [["Bank", f.bankName], ["Site connector", f.connectorName], ["Alerted for", f.unhealthyMinutes !== undefined ? `${f.unhealthyMinutes} min` : null]],
         path: "/connectors",
       };
     case "APPROVAL_SETTING_CHANGED":

@@ -47,6 +47,10 @@ from source on the server).
    operator account (connectors / enrolment). Temporary passwords, changed at first sign-in.
 6. Bank site (`installers/site/install-site.sh --online`): official Tactical images from Docker Hub pinned by
    digest, on internal-only networks, bound to `127.0.0.2`; the site bundle is built locally (no download).
+   It also installs the **Tactical NATS watchdog** (`patchgate-tactical-watchdog.timer`, every minute from 2 min
+   after boot; cron where there is no systemd): after a reboot `trmm-nats` can lose a start-up race and Tactical
+   then reaches no PC ("natsdown"). The watchdog restarts only `trmm-nats` (with back-off), logs to journald and
+   reports to PatchGate, which alerts after 5 minutes (RUNBOOK §14 "Tactical messaging down").
 7. SNI router `pg-bank-edge` (official nginx, TLS passthrough): `:443` → PatchGate or Tactical by name,
    `:8443` → package cache, `:80` → redirect.
 8. Connector allow-list, enrolment code minted locally, connector enrolled with the job-signing key
@@ -63,7 +67,7 @@ from source on the server).
 - Logins: `/opt/patchgate-bank/logins.txt` (root only, mode 600). Delete it once everyone has signed in.
 - **Approval required** is ON by default for the bank: every change needs the second ADMIN (maker ≠ checker).
   An ADMIN can switch it per bank in Administration → Banks.
-- Health summary: smoke PASS, connector ACTIVE, Tactical reachable, egress lockdown proven.
+- Health summary: smoke PASS, connector ACTIVE, Tactical reachable, NATS watchdog active, egress lockdown proven.
 
 ## Bank PCs (one step)
 
@@ -96,6 +100,9 @@ sudo /opt/patchgate-bank/src/installers/bank/install.sh --uninstall [--purge]   
 - Go-live: set `QUARANTINE_HOURS=48` in `/opt/patchgate/deploy/.env.production` (default 0), then `--upgrade`.
 - Upgrades lift the egress lockdown only while images are built, then re-apply and re-prove it.
 - Bank DNS should carry the 5 names; the installer adds a marked `/etc/hosts` line on the server itself only.
+- After a server reboot nothing has to be started by hand: Docker restarts the containers, the firewall unit
+  re-applies the lockdown and the NATS watchdog fixes Tactical's message bus within ~1-2 minutes
+  (`journalctl -t patchgate-tactical-watchdog`; `--status` shows it).
 
 ## Notes
 

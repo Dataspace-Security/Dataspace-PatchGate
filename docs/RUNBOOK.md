@@ -537,6 +537,7 @@ fetch runs, audit chains, SIEM export, repository quota, certificate). Same thre
 | Audit chain integrity | `patchgate_audit_chain_valid{chain} == 0` (also `/api/ready` `checks.auditChain=false`) | `PatchGateAuditChainBroken` → **P1 security incident** — §9.5 |
 | SIEM export | `patchgate_siem_export_lag_seconds{chain}` (age of the oldest un-exported event) | > 15 min → P2; > 2 h → P1 (evidence gap) |
 | Connector last seen | `patchgate_connector_last_seen_age_seconds{bank,connector}` (+Inf = never), `patchgate_connectors{state}` | > 10 min → P2 to the bank contact; > 4 h → P1 if a window is open |
+| Site Tactical health | `patchgate_connector_tactical_health{bank,connector,state}` (ok / natsdown / unreachable), `patchgate_connector_tactical_unhealthy_seconds`; notifications `TACTICAL_UNHEALTHY` / `TACTICAL_RECOVERED`; audit `tactical.unhealthy` / `tactical.recovered` | unhealthy > 5 min → `PatchGateTacticalMessagingDown` **P1** — §14 |
 | Job backlog | `patchgate_jobs_oldest_queued_age_seconds{bank}` (due jobs only), `patchgate_jobs_open{bank,type,status}` | oldest due job > 1 h → P2; queued grew > 100 in 1 h → P2 |
 | Job failure rate | `patchgate_jobs_failed_24h` / (`_failed_24h` + `patchgate_jobs_succeeded_24h`) per bank | > 10 % (≥ 20 jobs) → P2; any `EXPIRED` deploy job inside a window → P2 (check `/operations`) |
 | Change approvals | `patchgate_change_requests_pending_approval_oldest_age_seconds{bank}` | waiting > 24 h → P3 (bank admins = checkers) |
@@ -854,3 +855,60 @@ forwarded). Re-run the installer (`--pc-token` or `--upgrade`) to re-seal.
 API keys, patch policies that are not manual, agent auto-update, and whether the service account can read the
 audit log. Any WARN there means the seal is broken: re-run `--pc-token` (re-provisions) and look at
 Connectors → Tactical activity.
+
+## 14. Site operations: Tactical messaging down (`natsdown`)
+
+**Symptom.** Connectors page: red banner "Tactical cannot reach its PCs at …" and the badge **Tactical messaging
+down** (or **Tactical unreachable**) with "for N min" and the site watchdog's restart count; dashboard item
+"Tactical messaging down at …"; deployments of that site show the stage **Waiting: Tactical messaging down at the
+site** with the note "Tactical messaging down at the site — retrying automatically (retry N scheduled)". After
+5 minutes: a **critical** `TACTICAL_UNHEALTHY` notification (bank ADMINs + platform ADMINs, both scopes' webhooks;
+cannot be switched off), `tactical.unhealthy` on the bank's audit chain (→ bank SIEM) and the Prometheus alert
+`PatchGateTacticalMessagingDown`. One alert per episode; `TACTICAL_RECOVERED` + `tactical.recovered` when the site
+is ok again. Blips the watchdog fixes within 5 minutes raise nothing (they stay visible in the watchdog log).
+
+**Cause.** After a reboot of the site VM, official Tactical's `trmm-nats` can lose a start-up race with
+`tactical-init` (nats-server starts before `nats-rmm.conf` is written; supervisor gives up). The container stays
+"Up", and Tactical answers every script run with `natsdown`: no PC is reachable. Nothing reaches a PC, so retrying
+is always safe: PatchGate re-queues such installs (at most 5 min apart, up to 30 attempts, never past the
+maintenance window) instead of failing them after 5 attempts.
+
+**Self-healing (normally no action needed).** `install-site.sh` (and therefore the all-in-one
+`installers/bank/install.sh`) installs a host watchdog: `patchgate-tactical-watchdog.timer` (systemd; 2 min after
+boot, then every minute; the service is ordered after `docker.service`, like `patchgate-bank-firewall.service`), or
+`/etc/cron.d/patchgate-tactical-watchdog` where there is no systemd. Each pass of
+`/opt/patchgate-site/runtime/tactical/tactical-watchdog.sh`:
+
+- acts only when the site is meant to be up (`trmm-backend` running, `trmm-init` exited 0), never while an
+  installer runs (`state/watchdog.pause`, ignored after 2 h), and touches **only** `trmm-nats`;
+- checks nats-server inside `trmm-nats` (same probe as `--status`), with a 90 s grace after a container start;
+- down → `docker restart trmm-nats` (`docker start` if it was stopped), then waits up to 60 s for nats-server.
+  Tactical opens a new NATS connection per command, so backend / celery need no restart; agents reconnect by
+  themselves. Back-off: restarts 1, 2, 4, 8 … min apart, at most 6 per hour (`PG_WATCHDOG_MAX_RESTARTS`); after
+  that it only reports until the hour has passed;
+- logs to journald / syslog (tag `patchgate-tactical-watchdog`) and writes the non-secret
+  `/opt/patchgate-site/etc/tactical-health.json`, which the connector reads (read-only mount) and reports in its
+  heartbeat (`tacticalHealth`). The connector also reports `natsdown` itself when a script run is answered that
+  way, and `unreachable` when Tactical's API does not answer. A watchdog file older than 5 min is ignored.
+
+The compose override also gives `trmm-nats` a healthcheck (visibility only: `docker ps` shows "unhealthy";
+Docker does not restart unhealthy containers — the watchdog does).
+
+**Playbook (alert still open after the watchdog's restarts).**
+
+1. On the site VM: `sudo /opt/patchgate-site/runtime/install-site.sh --status` — "Tactical NATS message bus",
+   "NATS watchdog timer active" and the last `watchdog health` line.
+2. `journalctl -t patchgate-tactical-watchdog --since -2h` (or `journalctl -u patchgate-tactical-watchdog`; syslog
+   without systemd). "gave up for this hour" = 6 restarts did not help.
+3. `docker logs --tail 50 trmm-nats` and `docker logs --tail 50 trmm-init`: `trmm-init` must have exited 0
+   (`docker inspect -f '{{.State.ExitCode}}' trmm-init`). If it failed, re-run
+   `sudo /opt/patchgate-site/runtime/install-site.sh --upgrade /opt/patchgate-site/runtime` (re-runs init, keeps data).
+4. Manual restart: `docker restart trmm-nats`, wait ~30 s, `--status` again. A full disk or memory pressure on
+   the VM (`df -h`, `free -m`) is the usual reason it keeps failing.
+5. Timer missing: re-run the installer (`--upgrade`), or `systemctl enable --now patchgate-tactical-watchdog.timer`.
+   Pause it for manual maintenance: `touch /opt/patchgate-site/state/watchdog.pause` (delete it afterwards).
+6. "Tactical unreachable" instead of "messaging down": the connector gets no answer from `https://api.<site>:4443`
+   — check `trmm-nginx` / `trmm-backend` (`docker ps`, logs) and the site certificate (`--status`).
+
+When Tactical is ok again, waiting deployments continue automatically (no re-approval); the recovery
+notification reports how long the alert was open.

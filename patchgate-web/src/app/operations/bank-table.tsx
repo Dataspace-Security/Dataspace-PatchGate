@@ -30,6 +30,7 @@ function Row({ r }: { r: OpsBankRow }) {
   const relay = b.connectors.filter((c) => c.siemConfigured !== null);
   const relayErrors = relay.filter((c) => c.siemConfigured && c.siemOk === false).length;
   const relayOn = relay.filter((c) => c.siemConfigured).length;
+  const tacticalBad = b.connectors.filter((c) => c.online && (c.tacticalHealth === "natsdown" || c.tacticalHealth === "unreachable"));
   return (
     <tr className={rowCls}>
       <td>
@@ -55,6 +56,11 @@ function Row({ r }: { r: OpsBankRow }) {
           )}
           {total > 0 && <div className={sub}>stalest seen {fmtAge(r.worstLastSeenAgeSec)} ago</div>}
           {total > 0 && <div className={sub}>v {r.versions.join(", ")} · cache free {fmtBytes(r.minCacheFreeBytes)}</div>}
+          {tacticalBad.length > 0 && (
+            <div className="text-xs text-danger">
+              Tactical {tacticalBad.map((c) => `${c.tacticalHealth === "natsdown" ? "messaging down" : "unreachable"} at ${c.name}${c.tacticalUnhealthySec ? ` (${fmtAge(c.tacticalUnhealthySec)})` : ""}`).join(", ")}
+            </div>
+          )}
         </Cell>
       </td>
       <td>

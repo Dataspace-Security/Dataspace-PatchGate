@@ -54,6 +54,9 @@ function ConnectorHealthCard({ health, directTactical }: { health: Health; direc
           {health.tacticalDown.length > 0 && (
             <p className="text-xs text-danger">Tactical unreachable from: {health.tacticalDown.map((c) => c.name).join(", ")}</p>
           )}
+          {health.tacticalMessagingDown.length > 0 && (
+            <p className="text-xs text-danger">Tactical messaging down (no PC reachable, retrying automatically): {health.tacticalMessagingDown.map((c) => c.name).join(", ")}</p>
+          )}
         </div>
       )}
     </Card>

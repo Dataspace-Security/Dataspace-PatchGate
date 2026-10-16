@@ -86,7 +86,7 @@ docker save -o "$STAGE/images/local.tar" "$CONNECTOR_IMAGE"
 H="$REPO/installers/site"
 cp "$H/install-site.sh" "$STAGE/install-site.sh"
 cp "$CACHE/docker-compose-$TACTICAL_VERSION.yml" "$STAGE/tactical/docker-compose.yml"
-cp "$H/tactical/docker-compose.site.yml" "$H/tactical/provision-site.py" "$H/tactical/break-glass.py" "$STAGE/tactical/"
+cp "$H/tactical/docker-compose.site.yml" "$H/tactical/provision-site.py" "$H/tactical/break-glass.py" "$H/tactical/tactical-watchdog.sh" "$STAGE/tactical/"
 cp -r "$H/tactical/meshcentral-offline" "$STAGE/tactical/meshcentral-offline"
 cp "$H/connector/write-config.mjs" "$STAGE/connector/"
 for s in Install-PatchGatePackage.ps1 Invoke-PatchGateWuScan.ps1 Install-PatchGateWinUpdate.ps1; do

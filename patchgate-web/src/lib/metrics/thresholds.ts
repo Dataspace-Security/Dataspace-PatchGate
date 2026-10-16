@@ -59,6 +59,8 @@ function band(value: number | null, amber: number, red: number): Rag {
 export function connectorsRag(connectors: readonly ConnectorOps[]): Rag {
   if (connectors.length === 0) return "none";
   if (connectors.some((c) => !c.online)) return "red";
+  // Tactical messaging down / unreachable at an online site (heartbeat.tacticalHealth): no PC can be reached.
+  if (connectors.some((c) => c.tacticalHealth === "natsdown" || c.tacticalHealth === "unreachable")) return "red";
   if (connectors.some((c) => c.tacticalReachable === false || c.siemOk === false)) return "amber";
   return "green";
 }

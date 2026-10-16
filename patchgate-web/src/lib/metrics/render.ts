@@ -3,6 +3,7 @@
  * Ages are exported as seconds; "never" is +Inf so `> threshold` alerts fire for it too.
  * Alert rules: deploy/monitoring/alerts.yml — keep metric names in sync.
  */
+import { TACTICAL_HEALTH_STATES } from "@/lib/connector/protocol";
 import { Registry } from "./prom";
 import { complianceRatio } from "./thresholds";
 import type { BankOps, OpsSnapshot, PlatformOps } from "./types";
@@ -20,6 +21,8 @@ function declareBankFamilies(r: Registry): void {
   r.declare(`${P}connector_info`, "ACTIVE connector version; value 1.");
   r.declare(`${P}connector_cache_free_bytes`, "Free bytes on the connector's site package cache (last heartbeat).");
   r.declare(`${P}connector_tactical_reachable`, "1 when the connector reached its Tactical server (last heartbeat).");
+  r.declare(`${P}connector_tactical_health`, "Site Tactical health from the connector heartbeat: 1 for the current state (ok / natsdown / unreachable).");
+  r.declare(`${P}connector_tactical_unhealthy_seconds`, "Seconds the site's Tactical has been natsdown / unreachable (0 = healthy).");
   r.declare(`${P}connector_siem_relay_ok`, "Connector audit relay to the bank SIEM: 1 ok, 0 error (only when configured).");
   r.declare(`${P}jobs_open`, "Open connector jobs by type and status (QUEUED / DELIVERED).");
   r.declare(`${P}jobs_oldest_queued_age_seconds`, "Age of the oldest due QUEUED job per bank (0 = none waiting).");
@@ -49,6 +52,10 @@ function bankMetrics(r: Registry, b: BankOps): void {
     r.gauge(`${P}connector_info`, "", 1, { ...l, version: c.version ?? "unknown" });
     if (c.cacheFreeBytes !== null) r.gauge(`${P}connector_cache_free_bytes`, "", c.cacheFreeBytes, l);
     if (c.tacticalReachable !== null) r.gauge(`${P}connector_tactical_reachable`, "", c.tacticalReachable ? 1 : 0, l);
+    if (c.tacticalHealth) {
+      for (const state of TACTICAL_HEALTH_STATES) r.gauge(`${P}connector_tactical_health`, "", c.tacticalHealth === state ? 1 : 0, { ...l, state });
+      r.gauge(`${P}connector_tactical_unhealthy_seconds`, "", c.tacticalUnhealthySec ?? 0, l);
+    }
     if (c.siemConfigured) r.gauge(`${P}connector_siem_relay_ok`, "", c.siemOk ? 1 : 0, l);
   }
   for (const j of b.jobBacklog) r.gauge(`${P}jobs_open`, "", j.count, { bank, type: j.type, status: j.status });

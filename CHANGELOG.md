@@ -10,6 +10,33 @@ signer, egress proxy, backup, site bundle. The connector protocol has its own in
 
 ## [Unreleased]
 
+### Added — Tactical messaging self-healing + visibility (protocol: optional heartbeat field, additive)
+- **Site watchdog** (`installers/site/tactical/tactical-watchdog.sh`): after a reboot official Tactical's
+  `trmm-nats` can lose a start-up race and Tactical answers every script run with `natsdown` (no PC reachable).
+  `install-site.sh` install / `--upgrade` (and so `installers/bank/install.sh`) now installs
+  `patchgate-tactical-watchdog.{service,timer}` (2 min after boot, then every minute, after `docker.service`;
+  `/etc/cron.d/patchgate-tactical-watchdog` without systemd); `--uninstall` removes it, `--status` and the bank
+  self-check show it. It restarts ONLY `trmm-nats` when nats-server is not running (same probe as `--status`),
+  with back-off (1, 2, 4 … min apart, max 6 per hour), only while the site is meant to be up and never during an
+  installer run (`state/watchdog.pause`), logs to journald/syslog (`patchgate-tactical-watchdog`) and writes the
+  non-secret `etc/tactical-health.json` for the connector. Tactical images unchanged; the compose override adds a
+  visibility-only healthcheck to `tactical-nats`. Both bundle builders ship the script.
+- **Connector:** reports `tacticalHealth { state: ok | natsdown | unreachable, since, detail, watchdog }` in every
+  heartbeat, from its own Tactical calls (natsdown answers, API without answer) and the watchdog file
+  (`tactical.healthFile`, default `tactical-health.json` next to `connector.json`; ignored when older than 5 min).
+- **Connector protocol (v1, additive):** optional `heartbeat.tacticalHealth` (both `protocol.ts` copies); older
+  servers ignore it, older connectors omit it (PatchGate then shows `tactical.reachable` only, no timed alert).
+- **PatchGate:** Connectors page badge "Tactical healthy / messaging down / unreachable" (since, watchdog
+  restarts) and a red banner; dashboard attention item; `/operations` connectors cell turns red; metrics
+  `patchgate_connector_tactical_health{state}` + `patchgate_connector_tactical_unhealthy_seconds`, alert rule
+  `PatchGateTacticalMessagingDown` (P1). Unhealthy > 5 min at an online site → ONE critical `TACTICAL_UNHEALTHY`
+  notification + `tactical.unhealthy` audit on the bank's chain per episode (NotificationAlert row, RLS);
+  `TACTICAL_RECOVERED` + `tactical.recovered` when ok again. No migration.
+- **Deployments:** an install answered `natsdown` (never sent to the PC) shows "Tactical messaging down at the
+  site — retrying automatically" (stage "Waiting: Tactical messaging down at the site") and is retried at most
+  5 min apart for up to 30 attempts within the maintenance window (was: failed after 5 attempts).
+- Docs: RUNBOOK §14 "Tactical messaging down", BANK-INSTALL (watchdog).
+
 ### Added — real-time Tactical guard (protocol: new job type + connector push, additive)
 - **Out-of-band approvals reset within ~30 seconds** (was: at the next COLLECT, ≤ 6 h / every 10 min for 2 h after
   human activity). The connector's new Tactical guard (`tactical.guardIntervalSec`, default 30, `0` = off;

@@ -61,6 +61,10 @@ describe("RAG thresholds", () => {
     expect(connectorsRag([conn()])).toBe("green");
     expect(connectorsRag([conn(), conn({ online: false })])).toBe("red");
     expect(connectorsRag([conn({ tacticalReachable: false })])).toBe("amber");
+    // Tactical messaging down / unreachable reported by the connector: no PC reachable → red
+    expect(connectorsRag([conn({ tacticalHealth: "natsdown", tacticalUnhealthySec: 400 })])).toBe("red");
+    expect(connectorsRag([conn({ tacticalHealth: "unreachable" })])).toBe("red");
+    expect(connectorsRag([conn({ tacticalHealth: "ok" })])).toBe("green");
   });
 
   it("SIEM relay from heartbeats", () => {
@@ -158,7 +162,7 @@ describe("renderMetrics", () => {
     errors: ["fetchRuns"],
     banks: [
       bank({
-        connectors: [conn(), conn({ id: "c2", name: "DR", online: false, lastSeenAt: null, lastSeenAgeSec: null, version: null, cacheFreeBytes: null, siemConfigured: null, siemOk: null })],
+        connectors: [conn({ tacticalHealth: "natsdown", tacticalUnhealthySec: 420 }), conn({ id: "c2", name: "DR", online: false, lastSeenAt: null, lastSeenAgeSec: null, version: null, cacheFreeBytes: null, siemConfigured: null, siemOk: null })],
         jobBacklog: [{ type: "COLLECT", status: "QUEUED", count: 7 }],
         oldestQueuedAgeSec: 1800,
         jobsFailed24h: [{ type: "DEPLOY_WINDOWS", status: "FAILED", count: 2 }],
@@ -189,6 +193,10 @@ describe("renderMetrics", () => {
     expect(text).toContain('patchgate_connectors{bank="bank-a",state="offline"} 1');
     expect(text).toContain('patchgate_connector_last_seen_age_seconds{bank="bank-a",connector="DR"} +Inf');
     expect(text).toContain('patchgate_connector_info{bank="bank-a",connector="DR",version="unknown"} 1');
+    expect(text).toContain('patchgate_connector_tactical_health{bank="bank-a",connector="HQ",state="natsdown"} 1');
+    expect(text).toContain('patchgate_connector_tactical_health{bank="bank-a",connector="HQ",state="ok"} 0');
+    expect(text).toContain('patchgate_connector_tactical_unhealthy_seconds{bank="bank-a",connector="HQ"} 420');
+    expect(text).not.toContain('patchgate_connector_tactical_health{bank="bank-a",connector="DR"'); // not reported
     expect(text).toContain('patchgate_jobs_open{bank="bank-a",status="QUEUED",type="COLLECT"} 7');
     expect(text).toContain('patchgate_jobs_oldest_queued_age_seconds{bank="bank-a"} 1800');
     expect(text).toContain('patchgate_jobs_failed_24h{bank="bank-a",status="FAILED",type="DEPLOY_WINDOWS"} 2');
