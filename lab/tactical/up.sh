@@ -70,6 +70,14 @@ INSTALL_DENO = False
 EOF'
 docker restart trmm-backend trmm-celery trmm-celerybeat trmm-websockets >/dev/null
 
+# Upstream start race: trmm-nats may start nats-server before tactical-init (re)wrote nats-rmm.conf; supervisor then
+# gives up and Tactical answers every script run with "natsdown". Restart NATS until nats-server is running.
+for _ in 1 2 3 4 5 6; do
+  docker exec trmm-nats sh -c 'command -v pgrep >/dev/null 2>&1 || exit 0; pgrep -x nats-server >/dev/null' 2>/dev/null && { echo "NATS: nats-server running"; break; }
+  echo "NATS: nats-server not running (start race) -> restarting trmm-nats"; docker restart trmm-nats >/dev/null; sleep 30
+done
+docker exec trmm-nats sh -c 'command -v pgrep >/dev/null 2>&1 || exit 0; pgrep -x nats-server >/dev/null' || { echo "NATS did not start (docker logs trmm-nats)"; exit 1; }
+
 # ---- Prove isolation: raw IP (no DNS needed) and DNS, from every Tactical container ----
 echo "isolation check (expect every line 'blocked'):"
 fail=0

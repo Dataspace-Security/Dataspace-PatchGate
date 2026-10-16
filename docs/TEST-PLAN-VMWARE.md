@@ -77,9 +77,9 @@ Tick each box; write the result (PASS / FAIL + screenshot) next to it. Test doma
 - [ ] 8.4 Switch Approval required back **ON**; 6.2 behaviour returns.
 
 ## 9. Rollout safety
-- [ ] 9.1 Advanced settings → Rings / maintenance windows visible; request outside a window waits (Note says why).
+- [ ] 9.1 Advanced settings → Rings / maintenance windows visible; request outside a window waits (Note: "waiting for the maintenance window … (next opens … UTC)").
 - [ ] 9.2 Emergency request (Advanced options) with approval ON needs **two different admins**.
-- [ ] 9.3 Cancel a queued deployment → status cancelled, audited.
+- [ ] 9.3 Stop a running rollout: change request → **Stop rollout** → PCs not started yet show "rollout stopped by …; not started", installs already sent finish; audited. (Before deployment: **Cancel** → status cancelled.)
 
 ## 10. Agent version
 - [ ] 10.1 Endpoints shows the agent version; an agent upgrade only happens through a PatchGate change request (AGENT_UPGRADE).

@@ -28,6 +28,7 @@ async function Security() {
           initial={{ passwordMaxAgeDays: view.passwordMaxAgeDays, inactivityDisableDays: view.inactivityDisableDays, maxSessionsPerUser: view.maxSessionsPerUser }}
           sessionIdleMinutes={view.sessionIdleMinutes}
           sessionMaxHours={view.sessionMaxHours}
+          readOnly={readOnly}
         />
         </fieldset>
         <p className="text-xs text-muted">

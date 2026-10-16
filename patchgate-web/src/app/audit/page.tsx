@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { canRead } from "@/lib/auth/roles";
 import { Suspense } from "react";
-import { Clock, Database, ShieldCheck, Upload } from "lucide-react";
+import { Clock, Database, Download, ShieldCheck, Upload } from "lucide-react";
 import { getPageUser } from "@/lib/auth/page-user";
 import { verifyAuditLogCached } from "@/lib/audit/service";
 import { auditExportStatus } from "@/lib/audit/export";
@@ -98,7 +98,12 @@ async function AuditContent({ requested }: { requested: string | undefined }) {
         </Card>
       )}
 
-      <Card title="Latest events" description={relay ? `Relayed to the bank SIEM up to seq ${relay.forwardedSeq} of ${direct.headSeq}.` : `Exported up to seq ${direct.exportedSeq} of ${direct.headSeq}.`} padded={false}>
+      <Card
+        title="Latest events"
+        description={relay ? `Relayed to the bank SIEM up to seq ${relay.forwardedSeq} of ${direct.headSeq}.` : `Exported up to seq ${direct.exportedSeq} of ${direct.headSeq}.`}
+        padded={false}
+        actions={chainId ? <AuditExportLinks /> : undefined}
+      >
         <table className={tableCls}>
           <thead className={theadCls}>
             <tr><th>#</th><th>Time</th><th>Actor</th><th>Action</th><th>Entity</th></tr>
@@ -116,6 +121,27 @@ async function AuditContent({ requested }: { requested: string | undefined }) {
           </tbody>
         </table>
       </Card>
+    </div>
+  );
+}
+
+/** CSV export of the bank chain (this / last month; other periods: /api/reports/csv?section=audit-log&period=…). Audited. */
+function AuditExportLinks() {
+  const now = new Date();
+  const month = (offset: number): string => {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
+    return d.toISOString().slice(0, 7);
+  };
+  const link = "inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline";
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <span className="text-xs text-muted">Export (CSV):</span>
+      <a className={link} href={`/api/reports/csv?section=audit-log&period=month&month=${month(0)}`}>
+        <Download size={14} aria-hidden /> This month
+      </a>
+      <a className={link} href={`/api/reports/csv?section=audit-log&period=month&month=${month(-1)}`}>
+        <Download size={14} aria-hidden /> Last month
+      </a>
     </div>
   );
 }

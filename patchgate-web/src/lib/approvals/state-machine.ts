@@ -182,7 +182,9 @@ export function transition(cr: CrSnapshot, action: CrAction, actor: Actor, opts:
 
     case "cancel":
       if (!canWrite(actor)) return fail("Only the creator or an admin can cancel");
-      if (cr.status === "DEPLOYING") return fail("Cannot cancel while deploying");
+      // While deploying, cancel = stop the rollout: PCs not started yet are skipped, installs already handed to
+      // the site finish; the request then closes normally (FAILED / PARTIAL) once nothing is in flight.
+      if (cr.status === "DEPLOYING") return { ok: true, next: "DEPLOYING" };
       return { ok: true, next: "CANCELLED" };
   }
 }

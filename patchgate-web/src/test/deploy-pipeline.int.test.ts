@@ -45,7 +45,7 @@ const { applyJobOutcome } = await import("@/lib/connector/handlers");
 const { createChangeRequest, applyAction } = await import("@/lib/approvals/service");
 const { startDeployment } = await import("@/lib/deploy/start");
 const { produceConnectorDeployments, pumpConnector, onJobsExpired } = await import("@/lib/deploy/connector-deploy");
-const { ringCounts, stopRingIfFailing } = await import("@/lib/deploy/connector-state");
+const { AuditBuffer, ringCounts, stopNotStarted, stopRingIfFailing } = await import("@/lib/deploy/connector-state");
 const { confirmSentDeployments } = await import("@/lib/deploy/connector-confirm");
 const { enforceDeployDeadlines, DEFAULT_DEPLOY_DEADLINE_DAYS } = await import("@/lib/deploy/deadline");
 const { finaliseChangeRequests, runWorkerTick } = await import("@/lib/deploy/worker");
@@ -231,6 +231,73 @@ describe("H3 — ring stop", () => {
     await set(7, 8, { status: "FAILED", failureKind: "INSTALL", startedAt: null });
     expect(await withTenant(TENANT_A, (tx) => stopRingIfFailing(tx, TENANT_A, crId, new Date()))).toBe(1);
     expect(await admin.deployment.findUniqueOrThrow({ where: { id: ds[12].id } })).toMatchObject({ status: "FAILED", failureKind: "RING_STOPPED" });
+  });
+});
+
+describe("Stop rollout (cancel while deploying)", () => {
+  it("an admin stops a rollout: not-started PCs are skipped, an install already at the site finishes, then the request closes", async () => {
+    const c = await connector(5);
+    const { patch } = await sevenZip();
+    const { crId, checker } = await deploying(c, 3, [patch.id]);
+    await produceConnectorDeployments();
+    await cacheOk(c);
+    await produceConnectorDeployments();
+    const ds = await admin.deployment.findMany({ where: { changeRequestId: crId }, orderBy: { id: "asc" } });
+    const jobs = await installJobs({ changeRequestId: crId });
+    // PC0: install handed to the site (delivered job); PC1: job not picked up yet; PC2: nothing produced yet.
+    const live = jobs.find((j) => j.deploymentId === ds[0].id)!;
+    const waiting = jobs.find((j) => j.deploymentId === ds[1].id)!;
+    expect(live && waiting).toBeTruthy();
+    await admin.connectorJob.update({ where: { id: live.id }, data: { status: "DELIVERED" } });
+    await admin.connectorJob.updateMany({ where: { changeRequestId: crId, id: { notIn: [live.id, waiting.id] }, type: { in: [...INSTALL] } }, data: { status: "CANCELLED" } });
+    await admin.deployment.update({ where: { id: ds[2].id }, data: { status: "QUEUED", startedAt: null } });
+
+    const auditor = sessionUserOf(await admin.user.create({ data: { upn: `aud${Math.random()}@a`, name: "Au", role: "AUDITOR", tenantId: TENANT_A } }));
+    await expect(applyAction(auditor, TENANT_A, crId, "cancel")).rejects.toThrow();
+    const r = await applyAction(checker, TENANT_A, crId, "cancel");
+    expect(r.status).toBe("DEPLOYING"); // in-flight install still running
+
+    const after = await admin.deployment.findMany({ where: { changeRequestId: crId }, orderBy: { id: "asc" } });
+    expect(after[0].status).toBe("SENDING"); // delivered: finishes on the PC
+    expect(after.slice(1).map((d) => [d.status, d.failureKind])).toEqual([["FAILED", "RING_STOPPED"], ["FAILED", "RING_STOPPED"]]);
+    expect(after[1].note).toMatch(/^rollout stopped by .+; not started$/);
+    expect((await admin.connectorJob.findUniqueOrThrow({ where: { id: waiting.id } })).status).toBe("CANCELLED");
+    expect((await admin.connectorJob.findUniqueOrThrow({ where: { id: live.id } })).status).toBe("DELIVERED");
+    const audit = await admin.auditEvent.findFirstOrThrow({ where: { action: "change_request.cancel", entityId: crId } });
+    expect(audit.payload).toMatchObject({ from: "DEPLOYING", to: "DEPLOYING", rolloutStopped: true, stoppedDeployments: 2, cancelledJobs: 1 });
+    expect((await admin.auditEvent.count({ where: { action: "deployment.failed", entityId: ds[1].id } }))).toBe(1);
+
+    // Nothing left to stop now (PC0 is at the site): a second stop is refused, nothing new is audited.
+    await expect(applyAction(checker, TENANT_A, crId, "cancel")).rejects.toThrow(/Nothing left to stop/);
+    expect(await admin.auditEvent.count({ where: { action: "change_request.cancel", entityId: crId } })).toBe(1);
+
+    // The delivered install ends → the request closes like any other rollout.
+    await admin.deployment.update({ where: { id: ds[0].id }, data: { status: "SUCCEEDED", finishedAt: new Date() } });
+    await finaliseChangeRequests();
+    expect((await admin.changeRequest.findUniqueOrThrow({ where: { id: crId } })).status).toBe("PARTIAL");
+  });
+});
+
+describe("stopNotStarted guards", () => {
+  it("never fails a deployment whose result arrived but is not applied yet; legacy mode leaves SENDING alone", async () => {
+    const c = await connector(5);
+    const { patch } = await sevenZip();
+    const { crId } = await deploying(c, 2, [patch.id]);
+    const ds = await admin.deployment.findMany({ where: { changeRequestId: crId }, orderBy: { id: "asc" } });
+    await admin.deployment.updateMany({ where: { id: { in: ds.map((d) => d.id) } }, data: { status: "SENDING", startedAt: new Date() } });
+    await jobRow(c, { type: "DEPLOY_PACKAGE", status: "SUCCEEDED", deploymentId: ds[0].id, processed: false });
+    const stop = (sending: boolean) =>
+      withTenant(TENANT_A, async (tx) => {
+        const audits = new AuditBuffer();
+        const r = await stopNotStarted(tx, TENANT_A, crId, "stopped; not started", "stopped", new Date(), audits, { sending });
+        await audits.flush(tx);
+        return r;
+      });
+    expect(await stop(false)).toEqual({ stopped: 0, cancelledJobs: 0 }); // legacy direct-Tactical bank
+    expect((await admin.deployment.findMany({ where: { changeRequestId: crId } })).every((d) => d.status === "SENDING")).toBe(true);
+    expect((await stop(true)).stopped).toBe(1);
+    const after = await admin.deployment.findMany({ where: { changeRequestId: crId }, orderBy: { id: "asc" } });
+    expect(after.map((d) => d.status)).toEqual(["SENDING", "FAILED"]); // PC0's unapplied SUCCEEDED result decides
   });
 });
 

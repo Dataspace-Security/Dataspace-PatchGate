@@ -311,6 +311,14 @@ describe("H5: install outcome unknown (never a second installer)", () => {
     tactical.runScriptStatus = { status: 400, body: "Unable to contact the agent" };
     await expectJobError(executeJob("DEPLOY_PACKAGE", { agentId: A1, package: pkg() }, deps), true, /400/);
   });
+
+  it("Tactical's 'natsdown' answer (its message bus is down, nothing sent) is retryable, not outcome-unknown", async () => {
+    tactical.addAgent({ agent_id: A1 });
+    pg.addPackage(bytes);
+    await executeJob("CACHE_PACKAGE", { package: pkg() }, deps);
+    tactical.onRunScript = async () => "natsdown";
+    await expectJobError(executeJob("DEPLOY_PACKAGE", { agentId: A1, package: pkg() }, deps), true, /NATS message bus \(natsdown\).*restart the trmm-nats/);
+  });
 });
 
 describe("LOW: SYNC_AGENTS never truncates", () => {

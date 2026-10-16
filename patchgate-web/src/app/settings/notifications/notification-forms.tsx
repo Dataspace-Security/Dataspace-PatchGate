@@ -86,7 +86,7 @@ export function AddWebhookForm({ scope, hosts }: { scope: string; hosts: string[
 }
 
 /** Event switches for a scope (bank / platform settings). */
-export function EventTogglesForm({ scope, events }: { scope: string; events: EventToggle[] }) {
+export function EventTogglesForm({ scope, events, readOnly = false }: { scope: string; events: EventToggle[]; readOnly?: boolean }) {
   const [state, setState] = useState<Record<string, boolean>>(() => Object.fromEntries(events.map((e) => [e.event, e.enabled])));
   const { run, working, error, done } = useAction();
   return (
@@ -113,13 +113,15 @@ export function EventTogglesForm({ scope, events }: { scope: string; events: Eve
         ))}
       </fieldset>
       <p className="text-xs text-muted">Critical events (audit-chain / SIEM integrity, account security) are always delivered and are not listed.</p>
-      <div className="flex items-center gap-3">
-        <button type="submit" disabled={working} className={`${buttonBase} ${BUTTON.primary}`}>
-          {working && <Loader2 size={15} className="animate-spin" />}
-          Save event settings
-        </button>
-        <Feedback error={error} done={done} />
-      </div>
+      {!readOnly && (
+        <div className="flex items-center gap-3">
+          <button type="submit" disabled={working} className={`${buttonBase} ${BUTTON.primary}`}>
+            {working && <Loader2 size={15} className="animate-spin" />}
+            Save event settings
+          </button>
+          <Feedback error={error} done={done} />
+        </div>
+      )}
     </form>
   );
 }

@@ -1,6 +1,7 @@
 # Runs INSIDE the Tactical backend container:  python manage.py shell < /tmp/pg-provision-site.py
 # Options come from /tmp/pg-provision-args.json (written by install-site.sh):
-#   {"client": "<bank name>", "site": "<site name>", "tokenHours": 72, "rotateKey": false, "scriptsDir": "/tmp/pg-scripts"}
+#   {"client": "<bank name>", "site": "<site name>", "tokenHours": 72, "rotateKey": false, "scriptsDir": "/tmp/pg-scripts",
+#    "keepBreakGlass": false, "breakGlassUser": "tacticaladmin" (optional; the lab passes its own admin)}
 #
 # Creates (idempotently) everything the PatchGate connector needs in a fresh Tactical, least privilege:
 #   1. role "PatchGate service" with only the permissions the connector uses
@@ -106,7 +107,7 @@ for p in WinUpdatePolicy.objects.all():  # default, per-agent and automation-pol
         policies_fixed += 1
 
 # --- 7. seal: nobody patches or installs through Tactical by hand -------------------------------------------
-BREAK_GLASS_USER = "tacticaladmin"
+BREAK_GLASS_USER = str(args.get("breakGlassUser") or "tacticaladmin")  # lab: its Tactical admin is labadmin
 keep_break_glass = bool(args.get("keepBreakGlass"))  # break-glass is ON right now (install-site.sh state)
 now = timezone.now()
 newly_blocked = []

@@ -116,6 +116,8 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
   };
   const required = requiredApprovalsOf(snapshot);
   const round = snapshot.approvals;
+  // For display: who approved stays visible after the request moved on (the state machine only needs the open round).
+  const approvedBy = round.length > 0 ? round : cr.approvals;
   const now = new Date();
   const expired = cr.status === "APPROVED" && cr.approvalExpiresAt !== null && cr.approvalExpiresAt <= now;
   // The approval covers the endpoints snapshotted at submission; say how many in the confirmation.
@@ -144,7 +146,12 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
         ? [{ ...a, confirm: `Queue deployment to the approved endpoints${targetsText}?` }]
         : a.action === "submit" && !tenant.requireBankApproval
           ? [{ ...a, label: "Submit (approval is off)", confirm: "Approval is OFF for this bank: submitting approves this request right away (no second person). This is recorded in the audit log. Submit?" }]
-          : [a],
+          : a.action === "cancel" && cr.status === "DEPLOYING"
+            ? // Stop the rollout: only useful while some PCs have not started yet.
+              cr.deployments.some((d) => d.status === "QUEUED" || d.status === "SENDING")
+              ? [{ ...a, label: "Stop rollout", variant: "danger" as const, confirm: "Stop this rollout? PCs that have not started yet are skipped; installs already sent to a PC finish. This is recorded in the audit log." }]
+              : []
+            : [a],
   );
   const canEditDraft = cr.status === "DRAFT" && cr.createdById === user.id && canWrite(user);
   const counts = cr.deployments.reduce<Record<string, number>>((acc, d) => ({ ...acc, [d.status]: (acc[d.status] ?? 0) + 1 }), {});
@@ -189,8 +196,8 @@ async function Detail({ params }: { params: Promise<{ id: string }> }) {
           ) : (
             <Step
               done={cr.approvedById !== null}
-              title={required > 1 ? `Approved (${Math.min(round.length, required)} of ${required} checkers)` : "Approved (checker)"}
-              who={round.length > 0 ? round.map((a) => a.userName).join(", ") : cr.approvedBy?.name}
+              title={required > 1 ? `Approved (${Math.min(approvedBy.length, required)} of ${required} checkers)` : "Approved (checker)"}
+              who={approvedBy.length > 0 ? approvedBy.map((a) => a.userName).join(", ") : cr.approvedBy?.name}
               when={cr.decidedAt}
             />
           )}

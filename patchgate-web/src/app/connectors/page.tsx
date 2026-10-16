@@ -34,7 +34,7 @@ function TacticalCell({ c }: { c: ConnectorView }) {
   return (
     <div className="space-y-0.5">
       {t.reachable ? <Badge tone="good">reachable</Badge> : <Badge tone="bad">unreachable</Badge>}
-      {typeof t.agents === "number" && <div className="text-xs text-muted">{t.agents} agents in Tactical</div>}
+      {typeof t.agents === "number" && <div className="text-xs text-muted">{t.agents} {t.agents === 1 ? "agent" : "agents"} in Tactical</div>}
       {t.error && <div className="max-w-[16rem] truncate text-xs text-danger" title={t.error}>{t.error}</div>}
     </div>
   );
@@ -82,7 +82,7 @@ function ConnectorsTable({ rows, canAdmin, showBank }: { rows: ConnectorView[]; 
                 )}
               </td>
               <td className="text-xs tabular-nums">
-                <div className="text-fg">{c.endpoints} PCs</div>
+                <div className="text-fg">{c.endpoints} {c.endpoints === 1 ? "PC" : "PCs"}</div>
                 <div className="text-muted">
                   {c.queuedJobs} queued · {c.inFlightJobs} running
                 </div>

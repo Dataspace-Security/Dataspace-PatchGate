@@ -24,7 +24,7 @@ function BankFields({ draft, onChange }: { draft: BankDraft; onChange: (d: BankD
         <input
           className={`${inputCls} font-mono`}
           required
-          pattern="[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?"
+          pattern="[a-z0-9](?:[a-z0-9\-]{0,38}[a-z0-9])?"
           title="2–40 lower-case letters, digits or dashes"
           placeholder="bank-a"
           maxLength={40}

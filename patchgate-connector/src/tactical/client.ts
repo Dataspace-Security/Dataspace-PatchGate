@@ -146,6 +146,11 @@ export function createTacticalClient(opts: TacticalClientOptions): TacticalClien
         // Tactical holds the request open until the script finishes: wait script timeout + margin.
         (input.timeoutSec + 30) * 1000,
       );
+      if (typeof out === "string" && out.trim() === NATS_DOWN) {
+        // Tactical answers "natsdown" when IT cannot reach its own NATS message bus: nothing was sent to the PC,
+        // so a retry is safe (and needed). Seen after a site restart when trmm-nats lost the start race.
+        throw new TacticalError("Tactical cannot reach its NATS message bus (natsdown): the script was not sent to the PC; restart the trmm-nats container on the site", 503, NATS_DOWN);
+      }
       return typeof out === "string" ? out : JSON.stringify(out);
     },
     auditLogPage: async (page, rowsPerPage) => {
@@ -157,6 +162,9 @@ export function createTacticalClient(opts: TacticalClientOptions): TacticalClien
     },
   };
 }
+
+/** Tactical's runscript answer when its backend cannot reach NATS: the script never left Tactical. */
+export const NATS_DOWN = "natsdown";
 
 /** Transient Tactical failures that PatchGate may safely re-queue (NOT for script runs: see below). */
 export function isRetryableTactical(err: unknown): boolean {
@@ -178,6 +186,7 @@ const GATEWAY_STATUSES = new Set([408, 502, 503, 504]);
  */
 export function isRunScriptOutcomeUnknown(err: unknown): boolean {
   if (!(err instanceof TacticalError)) return false;
+  if (err.detail === NATS_DOWN) return false; // never sent: safe to retry
   if (err.status === undefined) return true;
   if (GATEWAY_STATUSES.has(err.status)) return true;
   return err.status === 400 && /timed? ?out/i.test(err.detail ?? "") && !/unable to contact|offline/i.test(err.detail ?? "");

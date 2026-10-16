@@ -79,6 +79,16 @@ describe("change request state machine", () => {
     });
     expect(transition(cr({ status: "COMPLETED" }), "cancel", admin).ok).toBe(false);
   });
+
+  it("cancel while deploying = stop the rollout: the request stays DEPLOYING until in-flight installs end", () => {
+    const admin: Actor = { id: "a", role: "ADMIN", tenantId: null };
+    const auditor: Actor = { id: "v", role: "AUDITOR", tenantId: null };
+    expect(transition(cr({ status: "DEPLOYING" }), "cancel", admin)).toEqual({ ok: true, next: "DEPLOYING" });
+    expect(transition(cr({ status: "DEPLOYING" }), "cancel", auditor).ok).toBe(false);
+    for (const done of ["COMPLETED", "PARTIAL", "FAILED", "CANCELLED"] as const) {
+      expect(transition(cr({ status: done }), "cancel", admin).ok).toBe(false);
+    }
+  });
 });
 
 describe("per-bank approval policy", () => {

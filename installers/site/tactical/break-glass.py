@@ -1,6 +1,6 @@
 # Runs INSIDE the Tactical backend container:  python manage.py shell < /tmp/pg-break-glass.py
 # Options from /tmp/pg-break-glass-args.json (written by install-site.sh --break-glass on|off):
-#   {"state": "on" | "off" | "check", "by": "<who, from the site VM>"}
+#   {"state": "on" | "off" | "check", "by": "<who, from the site VM>", "user": "tacticaladmin" (optional)}
 #
 # Break-glass for the sealed site Tactical (RUNBOOK "Tactical is sealed"): the dashboard login of the
 # break-glass account tacticaladmin is normally blocked (Tactical's per-user block_dashboard_login).
@@ -21,10 +21,9 @@ from core.models import CoreSettings
 from logs.models import AuditLog
 from winupdate.models import WinUpdatePolicy
 
-BREAK_GLASS_USER = "tacticaladmin"
-
 with open("/tmp/pg-break-glass-args.json", encoding="utf-8") as f:
     args = json.load(f)
+BREAK_GLASS_USER = str(args.get("user") or "tacticaladmin")  # optional; the lab passes its own admin
 state = str(args.get("state", ""))
 if state not in ("on", "off", "check"):
     raise SystemExit("state must be on, off or check")
@@ -37,7 +36,9 @@ if state == "check":
     if svc is not None:
         other_keys = other_keys.exclude(user=svc)
     severities = ("critical", "important", "moderate", "low", "other")
-    loose = sum(1 for p in WinUpdatePolicy.objects.all() if any(getattr(p, s) != "manual" for s in severities))
+    # Only "approve" makes Tactical approve by itself. Every new PC gets a per-agent policy with "inherit", which
+    # resolves to an automation policy (itself counted here) or, with none, to no auto-approval: not a seal break.
+    loose = sum(1 for p in WinUpdatePolicy.objects.all() if any(getattr(p, s) == "approve" for s in severities))
     core = CoreSettings.objects.first()
     print("PATCHGATE_SEAL_CHECK=" + json.dumps({
         "openDashboardUsers": ";".join(open_users),

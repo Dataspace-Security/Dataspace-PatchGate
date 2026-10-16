@@ -1,76 +1,41 @@
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test, type Page } from "@playwright/test";
-import { labUser } from "./lab-users";
+import {
+  actFor,
+  bankSwitcher,
+  BANK_A_APPROVER,
+  expect,
+  go,
+  PLATFORM_ADMIN as ADMIN,
+  PLATFORM_AUDITOR as AUDITOR,
+  shot,
+  shotThemes,
+  signIn as signInAs,
+  test,
+  waitForHydratedForm,
+} from "./helpers";
+import type { Page } from "@playwright/test";
 
 /**
  * Hosted-lab journey in a real browser against the running lab (no fakes):
  *   our staff sign in (password only) → onboard a bank + one-time connector code in the UI →
  *   Bank A's real connector is online → switch bank → endpoints / discovery → a bank user sees only
- *   their own bank. Screenshots: e2e-lab/screenshots/.
+ *   their own bank. Screenshots: e2e-lab/screenshots/. Every test also fails on browser console errors and 5xx.
  */
 test.describe.configure({ mode: "serial" });
-
-const SHOTS = "e2e-lab/screenshots";
-// Two roles everywhere: ADMIN (platform: maker; bank: also the checker) and AUDITOR (read-only).
-const ADMIN = "lab-admin@patchgate.lab";
-const AUDITOR = "lab-auditor@patchgate.lab";
-const BANK_A_APPROVER = "approver@bank-a.lab"; // a second Bank A ADMIN — the bank's checker
 
 const BANK_B = { name: "Bank B", slug: "bank-b" };
 const ENROLL_CODE_RE = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){4}$/;
 
-/** The bank switcher (sidebar, mobile bar and /select-bank each render one): the first visible one. */
-const bankSwitcher = (page: Page) => page.getByLabel("Acting for bank").filter({ visible: true }).first();
+/** The site connector's row in the connectors table (Tactical-activity rows name the site too). */
+const connectorRow = (page: Page, site: string) => page.getByRole("row").filter({ hasText: site }).filter({ hasText: /version \d/ });
 
-async function shot(page: Page, name: string): Promise<void> {
-  await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
-}
-
-/**
- * Wait until React has hydrated the sign-in form. Before that, a click submits the bare <form> natively
- * (GET /login?username=…&password=… — see the lab report finding), so never type before this.
- */
-async function waitForHydratedForm(page: Page): Promise<void> {
-  await page.waitForFunction(() => {
-    const form = document.querySelector("form");
-    return !!form && Object.keys(form).some((k) => k.startsWith("__reactProps"));
-  });
-}
-
-/**
- * Submit one sign-in step (POST /api/auth/{step}) and retry it on HTTP 500.
- * LAB FINDING: under host load (`next dev` + a long worker tick in the same process) a step can return 500
- * "Sign-in is temporarily unavailable" — Prisma P2028, the 5 s interactive-transaction timeout in
- * src/lib/auth/local-login.ts. The page says "Please try again", so retry like a user, and record it.
- */
-async function submitStep(page: Page, upn: string, step: "password", submit: () => Promise<void>): Promise<void> {
-  for (let attempt = 1; ; attempt++) {
-    const res = page.waitForResponse((r) => r.url().endsWith(`/api/auth/${step}`) && r.request().method() === "POST");
-    await submit();
-    if ((await res).status() !== 500) return;
-    test.info().annotations.push({ type: "lab-finding", description: `${upn}: ${step} step HTTP 500 "temporarily unavailable" (attempt ${attempt})` });
-    if (attempt >= 5) throw new Error(`sign-in for ${upn} kept failing at the ${step} step`);
-  }
-}
-
-/** The real local sign-in form: password only (local sign-in has no second step by design). */
-async function signIn(page: Page, upn: string, shotPrefix?: string): Promise<void> {
-  await page.context().clearCookies();
-  await page.goto("/login");
-  await waitForHydratedForm(page);
-  await page.getByLabel("Username").fill(upn);
-  await page.getByLabel("Password").fill(labUser(upn).password);
-  if (shotPrefix) await shot(page, `${shotPrefix}-password`);
-  await submitStep(page, upn, "password", async () => page.getByRole("button", { name: "Continue" }).click());
-  await page.waitForURL((u) => !u.pathname.startsWith("/login"));
-  // The landing page may redirect again (e.g. staff without a bank → /select-bank): let it settle first.
-  await page.waitForLoadState("networkidle");
-}
+const signIn = (page: Page, upn: string, shotPrefix?: string): Promise<void> =>
+  signInAs(page, upn, { shotName: shotPrefix ? `${shotPrefix}-password` : undefined });
 
 test("platform admin signs in with username + password only (no code step)", async ({ page }) => {
-  await page.goto("/login");
+  await go(page, "/login");
   await waitForHydratedForm(page);
   await expect(page.getByLabel("Username")).toBeVisible();
   await expect(page.getByLabel("Verification code")).toHaveCount(0);
@@ -81,7 +46,7 @@ test("platform admin signs in with username + password only (no code step)", asy
 });
 
 test("a wrong password is refused with the generic message", async ({ page }) => {
-  await page.goto("/login");
+  await go(page, "/login");
   await waitForHydratedForm(page);
   await page.getByLabel("Username").fill(ADMIN);
   await page.getByLabel("Password").fill("definitely-not-the-password");
@@ -93,11 +58,11 @@ test("a wrong password is refused with the generic message", async ({ page }) =>
 test("platform auditor: reads every bank, has no write buttons, and the API refuses changes", async ({ page }) => {
   await signIn(page, AUDITOR, "04-auditor");
   await expect(bankSwitcher(page)).toBeVisible(); // platform staff: may switch the bank it reads
-  await page.goto("/admin/banks");
+  await go(page, "/admin/banks");
   await expect(page.getByText("Read-only view (auditor).")).toBeVisible();
   await expect(page.getByRole("cell", { name: "bank-a", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "New bank" })).toHaveCount(0);
-  await page.goto("/connectors");
+  await go(page, "/connectors");
   await expect(page.getByRole("button", { name: "Enrol a site connector" })).toHaveCount(0);
   const r = await page.evaluate(async () => {
     const res = await fetch("/api/admin/tenants", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "x-auditor", name: "Nope" }) });
@@ -109,7 +74,7 @@ test("platform auditor: reads every bank, has no write buttons, and the API refu
 
 test("admin onboards a bank and creates a one-time connector enrolment code in the UI", async ({ page }) => {
   await signIn(page, ADMIN);
-  await page.goto("/admin/banks");
+  await go(page, "/admin/banks");
   if (!(await page.getByRole("cell", { name: BANK_B.slug, exact: true }).isVisible())) {
     await page.getByRole("button", { name: "New bank" }).click();
     await page.getByLabel("Bank name").fill(BANK_B.name);
@@ -119,7 +84,7 @@ test("admin onboards a bank and creates a one-time connector enrolment code in t
   await expect(page.getByText(BANK_B.slug, { exact: true }).first()).toBeVisible();
   await shot(page, "05-banks");
 
-  await page.goto("/connectors");
+  await go(page, "/connectors");
   await page.getByRole("button", { name: "Enrol a site connector" }).click();
   await page.locator("form").filter({ hasText: "Site name" }).locator("select").selectOption({ label: BANK_B.name });
   await page.getByLabel("Site name").fill("Bank B Branch 01");
@@ -139,8 +104,8 @@ test("admin onboards a bank and creates a one-time connector enrolment code in t
 
 test("Bank A's real site connector is online", async ({ page }) => {
   await signIn(page, ADMIN);
-  await page.goto("/connectors");
-  const row = page.getByRole("row").filter({ hasText: "Bank A HQ" });
+  await go(page, "/connectors");
+  const row = connectorRow(page, "Bank A HQ");
   await expect(row).toBeVisible();
   await expect(row.getByText("online", { exact: true })).toBeVisible();
   await expect(row.getByText(/pg-cache\.patchgate-lab\.internal:8443/)).toBeVisible();
@@ -152,10 +117,10 @@ test("staff switch to Bank A and view endpoints + discovery", async ({ page }) =
   const selected = page.waitForResponse((r) => r.url().endsWith("/api/tenant/select") && r.request().method() === "POST");
   await bankSwitcher(page).selectOption({ label: "Bank A" });
   expect((await selected).status()).toBe(200); // the bank cookie is set server-side before we navigate
-  await page.goto("/endpoints");
+  await go(page, "/endpoints");
   await expect(page.getByRole("heading", { name: "Endpoints" })).toBeVisible();
   await shot(page, "08-bank-a-endpoints");
-  await page.goto("/discovery");
+  await go(page, "/discovery");
   await expect(page.getByRole("heading", { name: "Discovery" })).toBeVisible();
   await shot(page, "09-bank-a-discovery");
 });
@@ -163,8 +128,8 @@ test("staff switch to Bank A and view endpoints + discovery", async ({ page }) =
 test("a Bank A user sees only Bank A", async ({ page }) => {
   await signIn(page, BANK_A_APPROVER, "10-bank-a-approver");
   await expect(page.getByLabel("Acting for bank")).toHaveCount(0); // bank users cannot switch banks
-  await page.goto("/connectors");
-  await expect(page.getByRole("row").filter({ hasText: "Bank A HQ" })).toBeVisible();
+  await go(page, "/connectors");
+  await expect(connectorRow(page, "Bank A HQ")).toBeVisible();
   await expect(page.getByText("Bank B Branch 01")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Enrol a site connector" })).toHaveCount(0);
   await shot(page, "11-bank-a-approver-connectors");
@@ -174,7 +139,7 @@ test("a Bank A user sees only Bank A", async ({ page }) => {
 // Extended journeys: default rings, enrolment fingerprint, connectors layout, maker-checker, viewer, audit
 // ---------------------------------------------------------------------------------------------------------
 
-const BANK_A_VIEWER = "viewer@bank-a.lab";
+const BANK_A_VIEWER = "viewer@bank-a.lab"; // historic UPN of the Bank A AUDITOR
 const BANK_C = { name: "Bank C", slug: "bank-c" };
 const DEFAULT_RINGS = ["Ring0-Test", "Ring1-Pilot", "Ring2-Prod"];
 const JOB_KEY_FILE = join(__dirname, "..", "..", "lab", "patchgate", "secrets", "job-signing-key.pem");
@@ -185,36 +150,12 @@ function labJobKeyFingerprint(): string {
   return createHash("sha256").update(spki.subarray(spki.length - 32)).digest("hex");
 }
 
-/** Screenshot in the light AND the dark theme (the theme toggle only flips <html data-theme>). */
-async function shotThemes(page: Page, name: string): Promise<void> {
-  for (const theme of ["light", "dark"] as const) {
-    await page.evaluate((t) => (document.documentElement.dataset.theme = t), theme);
-    await shot(page, `${name}-${theme}`);
-  }
-  await page.evaluate(() => (document.documentElement.dataset.theme = "light"));
-}
-
-async function actFor(page: Page, bank: string): Promise<void> {
-  await page.waitForLoadState("networkidle");
-  // Only a hydrated <select> posts the switch (onChange); wait for React to attach its props first.
-  await bankSwitcher(page).evaluate((el) =>
-    new Promise<void>((done) => {
-      const ready = () => Object.keys(el).some((k) => k.startsWith("__reactProps"));
-      const tick = () => (ready() ? done() : setTimeout(tick, 100));
-      tick();
-    }),
-  );
-  const selected = page.waitForResponse((r) => r.url().endsWith("/api/tenant/select") && r.request().method() === "POST");
-  await bankSwitcher(page).selectOption({ label: bank });
-  expect((await selected).status()).toBe(200);
-}
-
 /** Path of the change request created by the maker test, used by the checker tests (serial suite). */
 let crPath = "";
 
 test("a new bank starts with the 3 default rollout rings", async ({ page }) => {
   await signIn(page, ADMIN);
-  await page.goto("/admin/banks");
+  await go(page, "/admin/banks");
   if (!(await page.getByRole("cell", { name: BANK_C.slug, exact: true }).isVisible())) {
     await page.getByRole("button", { name: "New bank" }).click();
     await page.getByLabel("Bank name").fill(BANK_C.name);
@@ -223,9 +164,9 @@ test("a new bank starts with the 3 default rollout rings", async ({ page }) => {
   }
   await expect(page.getByRole("cell", { name: BANK_C.slug, exact: true })).toBeVisible();
   await shotThemes(page, "12-banks-bank-c");
-  await page.goto("/");
+  await go(page, "/");
   await actFor(page, BANK_C.name);
-  await page.goto("/patches?needed=0");
+  await go(page, "/patches?needed=0");
   const ring = page.getByLabel("Target ring");
   await expect(ring).toBeVisible();
   expect(await ring.locator("option").allTextContents()).toEqual(DEFAULT_RINGS);
@@ -235,7 +176,7 @@ test("a new bank starts with the 3 default rollout rings", async ({ page }) => {
 test("connector enrolment panel shows the job-key fingerprint and the init command pins it", async ({ page }) => {
   const fpr = labJobKeyFingerprint();
   await signIn(page, ADMIN);
-  await page.goto("/connectors");
+  await go(page, "/connectors");
   await page.getByRole("button", { name: "Enrol a site connector" }).click();
   await page.locator("form").filter({ hasText: "Site name" }).locator("select").selectOption({ label: BANK_B.name });
   await page.getByLabel("Site name").fill("Bank B Branch 02");
@@ -255,8 +196,8 @@ test("connector enrolment panel shows the job-key fingerprint and the init comma
 test("connectors table fits 1440x900 with Revoke visible", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await signIn(page, ADMIN);
-  await page.goto("/connectors");
-  const row = page.getByRole("row").filter({ hasText: "Bank A HQ" });
+  await go(page, "/connectors");
+  const row = connectorRow(page, "Bank A HQ");
   await expect(row).toBeVisible();
   const revoke = row.getByRole("button", { name: "Revoke" });
   await expect(revoke).toBeVisible();
@@ -276,7 +217,7 @@ test("connectors table fits 1440x900 with Revoke visible", async ({ page }) => {
 test("maker (platform admin) creates a Bank A Ring0 change request with a third-party app", async ({ page }) => {
   await signIn(page, ADMIN);
   await actFor(page, "Bank A");
-  await page.goto("/patches?kind=THIRD_PARTY&needed=0");
+  await go(page, "/patches?kind=THIRD_PARTY&needed=0");
   const box = page.locator("tbody input[type=checkbox]:not([disabled])").first();
   await expect(box).toBeVisible();
   const patchTitle = ((await box.getAttribute("aria-label")) ?? "").replace(/^Select /, "");
@@ -300,7 +241,7 @@ test("platform staff cannot approve: the checker must be a Bank A admin (auditor
   expect(crPath).not.toBe("");
   await signIn(page, AUDITOR);
   await actFor(page, "Bank A");
-  await page.goto(crPath);
+  await go(page, crPath);
   await expect(page.getByText(/^Pending approval$/i)).toBeVisible();
   await expect(page.getByText(/The checker must be an admin of Bank A/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve" })).toHaveCount(0);
@@ -316,7 +257,7 @@ test("platform staff cannot approve: the checker must be a Bank A admin (auditor
 test("a different person (Bank A approver) approves; the frozen target count is shown", async ({ page }) => {
   expect(crPath).not.toBe("");
   await signIn(page, BANK_A_APPROVER);
-  await page.goto(crPath);
+  await go(page, crPath);
   const header = page.locator("p").filter({ hasText: "Target endpoints" }).first();
   await expect(header).toBeVisible();
   // Header: Ring · Window · Ticket · Target endpoints · Reboot (rc3) — the 4th bold value is the target count.
@@ -337,12 +278,12 @@ test("a different person (Bank A approver) approves; the frozen target count is 
 
 test("a Bank A auditor reads its own bank's admin pages but cannot change anything", async ({ page }) => {
   await signIn(page, BANK_A_VIEWER, "20-bank-a-auditor");
-  await page.goto("/admin/users");
-  await expect(page.getByText(/Read-only view \(auditor\)/)).toBeVisible();
+  await go(page, "/admin/users");
+  await expect(page.getByText("Accounts for your bank are created and managed by PatchGate")).toBeVisible(); // bank users: read-only list
   await expect(page.getByRole("button", { name: "New user" })).toHaveCount(0);
   await expect(page.getByText("admin@bank-a.lab")).toBeVisible();
   await expect(page.getByText("lab-admin@patchgate.lab")).toHaveCount(0); // never platform users
-  await page.goto("/admin/banks");
+  await go(page, "/admin/banks");
   await expect(page.getByText("Only PatchGate platform staff see the list of banks.")).toBeVisible();
   const status = await page.evaluate(async () => {
     const list = await fetch("/api/admin/tenants");
@@ -352,13 +293,13 @@ test("a Bank A auditor reads its own bank's admin pages but cannot change anythi
   expect(status.list).toBe(200); // own bank only
   expect(status.create).toBe(403);
   expect(status.body).not.toMatch(/temporaryPassword/);
-  await page.goto("/admin/users");
+  await go(page, "/admin/users");
   await shotThemes(page, "21-bank-auditor-read-only");
 });
 
 test("audit page shows the change-request events on the Bank A chain", async ({ page }) => {
   await signIn(page, BANK_A_APPROVER);
-  await page.goto("/audit");
+  await go(page, "/audit");
   await expect(page.getByText("Chain integrity")).toBeVisible();
   await expect(page.getByText("Valid", { exact: true })).toBeVisible();
   // The action badges are humanised: change_request.approve → "Change Request.Approve".

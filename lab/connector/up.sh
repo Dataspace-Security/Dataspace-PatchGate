@@ -18,9 +18,13 @@ dk() { MSYS_NO_PATHCONV=1 docker "$@"; }   # container paths must not be rewritt
 dk network inspect patchgate-lab-trmm_proxy >/dev/null 2>&1 || { echo "run lab/tactical/up.sh first"; exit 1; }
 
 # ---- image (built once from patchgate-connector/, like an offline install bundle) ----
-if ! dk image inspect patchgate-connector:1.0.0 >/dev/null 2>&1 || [ "${PGC_REBUILD:-0}" = "1" ]; then
-  echo "building patchgate-connector:1.0.0 ..."
-  dk build -q -t patchgate-connector:1.0.0 "$(cygpath -w "$LAB/../patchgate-connector")" >/dev/null
+# Rebuilt automatically when the connector source changed since the image was built (label pg.src).
+PGC_DIR="$LAB/../patchgate-connector"
+src_hash="$(cd "$PGC_DIR" && find src package.json package-lock.json Dockerfile tsconfig*.json -type f 2>/dev/null | LC_ALL=C sort | xargs cat | sha256sum | cut -c1-16)"
+img_hash="$(dk image inspect -f '{{index .Config.Labels "pg.src"}}' patchgate-connector:1.0.0 2>/dev/null || true)"
+if [ "$img_hash" != "$src_hash" ] || [ "${PGC_REBUILD:-0}" = "1" ]; then
+  echo "building patchgate-connector:1.0.0 (source $src_hash) ..."
+  dk build -q --label "pg.src=$src_hash" -t patchgate-connector:1.0.0 "$(cygpath -w "$PGC_DIR")" >/dev/null
 fi
 
 # ---- bank-side files: bank CA, PatchGate CA pin, Tactical API key, cache TLS cert from the bank PKI ----

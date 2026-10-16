@@ -15,7 +15,7 @@ interface Policy {
   timezone: string;
 }
 
-export function ApprovalPolicyForm({ initial }: { initial: Policy }) {
+export function ApprovalPolicyForm({ initial, readOnly = false }: { initial: Policy; readOnly?: boolean }) {
   const router = useRouter();
   const [, start] = useTransition();
   const [p, setP] = useState<Policy>(initial);
@@ -98,11 +98,13 @@ export function ApprovalPolicyForm({ initial }: { initial: Policy }) {
             <Alert tone={msg.tone}>{msg.text}</Alert>
           </div>
         )}
-        <div className="md:col-span-2">
-          <button type="submit" disabled={busy} className={`${buttonBase} ${BUTTON.primary}`}>
-            {busy && <Loader2 size={15} className="animate-spin" />} Save policy
-          </button>
-        </div>
+        {!readOnly && (
+          <div className="md:col-span-2">
+            <button type="submit" disabled={busy} className={`${buttonBase} ${BUTTON.primary}`}>
+              {busy && <Loader2 size={15} className="animate-spin" />} Save policy
+            </button>
+          </div>
+        )}
       </form>
     </Card>
   );

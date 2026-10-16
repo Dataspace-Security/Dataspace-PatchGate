@@ -17,7 +17,9 @@ echo "lab CA: $CA"
 
 step "2/7 Bank A Tactical (offline, isolation proven)"
 bash "$LAB/tactical/up.sh" "$DOMAIN" | tail -15
-[ -f "$LAB/tactical/provision.json" ] || bash "$LAB/tactical/provision.sh"
+# Provision + seal (same script as a bank site). Re-run when provision.json predates the seal.
+grep -q '"agentAutoUpdate"' "$LAB/tactical/provision.json" 2>/dev/null || bash "$LAB/tactical/provision.sh"
+bash "$LAB/tactical/break-glass.sh" check
 
 step "3/7 bank SIEM (lab TLS syslog receiver :6514)"
 if listening 6514; then echo "already listening"; else

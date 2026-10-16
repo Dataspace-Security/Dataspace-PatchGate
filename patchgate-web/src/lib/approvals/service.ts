@@ -10,6 +10,8 @@ import { recordApproval } from "./approval-record";
 import { eligibilityErrors } from "./eligibility";
 import { enabledAppIds, toEligible, requiresOfflineWindowsScan } from "./load-eligible";
 import { notifyChangeRequestAction } from "@/lib/notify/enqueue";
+import { AuditBuffer, stopNotStarted } from "@/lib/deploy/connector-state";
+import { lockConnectorPumps } from "@/lib/deploy/connector-deploy";
 
 export const createChangeRequestSchema = z.object({
   title: z.string().trim().min(3).max(200),
@@ -183,6 +185,9 @@ export async function applyAction(
 
     const result = transition(cr, action, user, { now, deployNow: opts.deployNow === true });
     if (!result.ok) throw new DomainError(result.error, 409);
+    // Stop rollout: hold the bank's connector pumps first, so nothing is claimed or enqueued while we stop.
+    const stopping = action === "cancel" && cr.status === "DEPLOYING";
+    const viaConnector = stopping ? (await lockConnectorPumps(tx, tenantId)) > 0 : false;
     if (action === "submit") {
       // Refuse before maker + checker spend time on a request PatchGate cannot deliver.
       const rows = await tx.changeRequestPatch.findMany({ where: { changeRequestId: crId }, select: { patch: { include: { appVersion: { include: { app: true } } } } } });
@@ -219,6 +224,18 @@ export async function applyAction(
       },
     });
     if (count !== 1) throw new DomainError("Change request was modified concurrently", 409);
+    // Cancel while deploying = stop the rollout (state-machine.ts): skip what has not started, let in-flight finish.
+    let rolloutStop: { stopped: number; cancelledJobs: number } | undefined;
+    if (stopping) {
+      const audits = new AuditBuffer();
+      rolloutStop = await stopNotStarted(tx, tenantId, crId, `rollout stopped by ${user.upn}; not started`, `rollout stopped by ${user.upn}`, now, audits, {
+        sending: viaConnector,
+      });
+      if (rolloutStop.stopped + rolloutStop.cancelledJobs === 0) {
+        throw new DomainError("Nothing left to stop: every PC of this rollout has already started", 409);
+      }
+      await audits.flush(tx);
+    }
     // The approval is for the snapshotted PCs: record how many in both the submit and the decision.
     let targets: number | undefined;
     if (action === "submit") {
@@ -245,6 +262,7 @@ export async function applyAction(
           ...(targets !== undefined ? { targetEndpoints: targets } : {}),
           ...(approval ? { approvalNo: approval.all.length, deployNow: approval.row.deployNow } : {}),
           ...(approvalExpiresAt ? { approvalExpiresAt: approvalExpiresAt.toISOString() } : {}),
+          ...(rolloutStop ? { rolloutStopped: true, stoppedDeployments: rolloutStop.stopped, cancelledJobs: rolloutStop.cancelledJobs } : {}),
         },
       },
       tx,

@@ -8,7 +8,7 @@ import { MAX_JOB_LIFETIME_MS } from "@/lib/connector/protocol";
 import { CacheView, ensurePackageCached } from "./connector-cache";
 import { PackageSizer, WindowsUpdatesNotReadyError, crPlanInclude, planEndpointSteps, type CrForPlan, type PlannedStep } from "./connector-plan";
 import { AuditBuffer, WAITING_NOTE_PREFIX, finish, installTypes, progressOf, stopRingIfFailing } from "./connector-state";
-import { currentWindow } from "./window";
+import { currentWindow, outsideWindowNote } from "./window";
 
 export { stopRingIfFailing } from "./connector-state";
 export { onCacheJobFinished, onInstallJobFailed, onInstallJobOutcomeUnknown, onInstallJobSucceeded, onJobsExpired } from "./connector-outcomes";
@@ -58,6 +58,11 @@ const deploymentInclude = { endpoint: true, changeRequest: { include: crPlanIncl
 function windowEnd(cr: CrForPlan, now: Date): Date | null {
   if (!cr.window) return new Date(now.getTime() + NO_WINDOW_TTL_MS);
   return currentWindow(cr.window, now)?.end ?? null;
+}
+
+/** Why a deployment waits outside its window (null without a window: then it is only too close to the end). */
+function windowNote(d: DeploymentRow, now: Date): string | null {
+  return d.changeRequest.window ? outsideWindowNote(d.changeRequest.window, now) : null;
 }
 
 async function inFlightInstalls(tx: Tx, connectorId: string): Promise<number> {
@@ -134,7 +139,7 @@ async function advance(tx: Tx, d: DeploymentRow, ctx: AdvanceCtx): Promise<Advan
   }
   const end = windowEnd(d.changeRequest, ctx.now);
   if (!end) {
-    await park(tx, d, ctx, OUTSIDE_WINDOW_RETRY_MS, null);
+    await park(tx, d, ctx, OUTSIDE_WINDOW_RETRY_MS, windowNote(d, ctx.now));
     return "outside-window";
   }
 
@@ -153,7 +158,7 @@ async function advance(tx: Tx, d: DeploymentRow, ctx: AdvanceCtx): Promise<Advan
   const notBefore = progress.anyJob ? ctx.now : new Date(ctx.now.getTime() + staggerOffsetMs(end.getTime() - ctx.now.getTime(), ctx.connector.maxConcurrentInstalls));
   const expiresAt = new Date(Math.min(end.getTime(), notBefore.getTime() + MAX_JOB_LIFETIME_MS));
   if (expiresAt.getTime() - notBefore.getTime() < MIN_RUN_MS) {
-    await park(tx, d, ctx, OUTSIDE_WINDOW_RETRY_MS, null);
+    await park(tx, d, ctx, OUTSIDE_WINDOW_RETRY_MS, windowNote(d, ctx.now));
     return "outside-window";
   }
   await enqueueJob(
@@ -181,7 +186,7 @@ async function advance(tx: Tx, d: DeploymentRow, ctx: AdvanceCtx): Promise<Advan
 async function startOne(tx: Tx, d: DeploymentRow, ctx: AdvanceCtx, result: PumpResult): Promise<AdvanceOutcome> {
   const { now } = ctx;
   if (!windowEnd(d.changeRequest, now)) {
-    await park(tx, d, ctx, OUTSIDE_WINDOW_RETRY_MS, null);
+    await park(tx, d, ctx, OUTSIDE_WINDOW_RETRY_MS, windowNote(d, now));
     return "outside-window";
   }
   // A re-queued deployment (window ended before delivery) keeps the steps it already completed.
@@ -271,6 +276,17 @@ async function dueSending(tx: Tx, tenantId: string, connectorId: string, now: Da
      ORDER BY d."nextAttemptAt" ASC
      LIMIT ${limit}`;
   return rows.map((r) => r.id);
+}
+
+/**
+ * Take the pump lock of every ACTIVE connector of a bank (same key as pumpConnector, sorted: no lock-order
+ * deadlocks), so no pump claims or enqueues for this bank until the caller's transaction ends.
+ * Returns how many connectors serve the bank (0 = legacy direct-Tactical bank).
+ */
+export async function lockConnectorPumps(tx: Tx, tenantId: string): Promise<number> {
+  const ids = (await tx.connector.findMany({ where: { tenantId, status: "ACTIVE" }, select: { id: true }, orderBy: { id: "asc" } })).map((c) => c.id);
+  for (const id of ids) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${PUMP_LOCK}::int4, hashtext(${id}))`;
+  return ids.length;
 }
 
 export async function pumpConnector(tenantId: string, connectorId: string, now = new Date()): Promise<PumpResult> {

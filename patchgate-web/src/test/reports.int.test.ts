@@ -35,7 +35,7 @@ const { prisma } = await import("@/lib/db");
 const { withTenant } = await import("@/lib/tenancy");
 const { buildBankReport, buildPlatformSummary } = await import("@/lib/reports/build");
 const { parsePeriod } = await import("@/lib/reports/period");
-const { exportCsv, generatePrintable } = await import("@/lib/reports/service");
+const { exportAuditLogCsv, exportCsv, generatePrintable } = await import("@/lib/reports/service");
 const { appendAudit } = await import("@/lib/audit/service");
 const { verifyChainIncremental } = await import("@/lib/audit/verify-incremental");
 
@@ -241,5 +241,24 @@ describe("exports", () => {
     const all = await exportCsv({ ...user, tenantId: null, upn: "padmin@pg.example" }, { kind: "all" }, PERIOD, "summary");
     expect(String(all.body)).toContain("Demo Bank B");
     expect(await admin.auditEvent.count({ where: { tenantId: null, action: "report.generate" } })).toBe(1);
+  });
+
+  it("exports the bank's own audit chain of a period as CSV (re-checkable: payload, prev_hash, hash); audited; never another bank", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const since = new Date(Date.now() - DAY).toISOString().slice(0, 10);
+    const period = parsePeriod({ period: "custom", from: since, to: today });
+    await appendAudit({ tenantId: TENANT_B, actor: "other-bank", action: "test.b-secret", entity: "T", entityId: "9" });
+    const scope = { kind: "bank" as const, tenantId: TENANT_A, bankName: "Default bank" };
+    const out = await exportAuditLogCsv(user, scope, period);
+    expect(out.filename).toBe(`patchgate-default-bank-audit-log-${since}.csv`);
+    const lines = (await new Response(out.body as ReadableStream<Uint8Array>).text()).trim().split("\r\n");
+    expect(lines[0]).toBe("seq,time_utc,actor,action,entity,entity_id,payload_json,prev_hash,hash");
+    const rows = await admin.auditEvent.findMany({ where: { tenantId: TENANT_A, ts: { gte: period.from, lt: period.to } }, orderBy: { seq: "asc" } });
+    expect(lines).toHaveLength(rows.length + 1);
+    expect(lines.slice(1).map((l) => l.split(",")[0])).toEqual(rows.map((r) => r.seq.toString()));
+    expect(lines.at(-1)).toContain(rows.at(-1)!.hash);
+    expect(lines.join("\n")).not.toContain("test.b-secret");
+    expect(await admin.auditEvent.count({ where: { tenantId: TENANT_A, action: "report.generate", payload: { path: ["section"], equals: "audit-log" } } })).toBe(1);
+    await expect(exportAuditLogCsv({ ...user, tenantId: null }, { kind: "all" }, period)).rejects.toThrow(/Select a bank/);
   });
 });

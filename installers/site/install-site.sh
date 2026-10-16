@@ -727,7 +727,24 @@ EOF
 echo yes; }')"
   if [ "$changed" = yes ]; then docker restart trmm-backend trmm-celery trmm-celerybeat trmm-websockets >/dev/null; info "Tactical auto-approve/auto-update tasks disabled"; fi
   local _; for _ in $(seq 1 40); do docker exec trmm-backend sh -c 'cd /opt/tactical/api && python manage.py check >/dev/null 2>&1' && break; sleep 3; done
+  ensure_nats || die "Tactical's NATS message bus did not start (docker logs trmm-nats)"
   ok "Tactical up: https://rmm.$SITE_DOMAIN"
+}
+
+# Upstream start race (official images, not modified): trmm-nats can start nats-server before tactical-init has
+# (re)written nats-rmm.conf; supervisor then gives up and Tactical answers every script run with "natsdown" (no PC
+# reachable). Restart trmm-nats until nats-server runs. After a VM reboot run --status (it reports this state).
+# (no pgrep in a future image = cannot tell = assume running; never block the install on the probe itself)
+nats_running() { docker exec trmm-nats sh -c 'command -v pgrep >/dev/null 2>&1 || exit 0; pgrep -x nats-server >/dev/null' 2>/dev/null; }
+ensure_nats() {
+  local i
+  for i in 1 2 3 4 5 6; do
+    nats_running && return 0
+    info "Tactical NATS not running (start race) -> restarting trmm-nats"
+    docker restart trmm-nats >/dev/null 2>&1 || true
+    sleep 30
+  done
+  nats_running
 }
 
 provision_tactical() {
@@ -1086,6 +1103,7 @@ do_break_glass() {
 # Read-only sealed-state self-check (--status).
 seal_status() {
   docker inspect trmm-backend >/dev/null 2>&1 || { warn "Tactical is not running: seal not checked"; return 0; }
+  if nats_running; then ok "Tactical NATS message bus running"; else warn "Tactical NATS message bus NOT running: PCs cannot be reached (fix: docker restart trmm-nats)"; fi
   step "Tactical seal"
   local line; line="$(seal_script check status PATCHGATE_SEAL_CHECK)" || { warn "seal check failed"; return 0; }
   PROV="$(mktemp)"; printf '%s\n' "${line#PATCHGATE_SEAL_CHECK=}" > "$PROV"
@@ -1098,7 +1116,7 @@ seal_status() {
   if [ "$bg" = on ]; then warn "break-glass is ON (tacticaladmin can sign in): run --break-glass off when done"; fi
   if [ -n "$users" ]; then warn "dashboard login OPEN for:$users (re-seal: --pc-token or --upgrade)"; else ok "dashboard login blocked"; fi
   if [ "$(jfield otherValidApiKeys)" = 0 ]; then ok "no other valid API keys"; else warn "$(jfield otherValidApiKeys) other valid API key(s) in Tactical"; fi
-  if [ "$(jfield nonManualPatchPolicies)" = 0 ]; then ok "every patch policy manual"; else warn "$(jfield nonManualPatchPolicies) patch policy(ies) not manual"; fi
+  if [ "$(jfield nonManualPatchPolicies)" = 0 ]; then ok "no patch policy auto-approves"; else warn "$(jfield nonManualPatchPolicies) patch policy(ies) auto-approve updates (re-seal: --upgrade)"; fi
   if [ "$(jfield agentAutoUpdate)" = off ]; then ok "agent auto-update off (agents upgrade only through PatchGate)"; else warn "agent auto-update is ON in Tactical"; fi
   if [ "$(jfield svcAuditRead)" = yes ]; then ok "service account can read the audit log"; else warn "service account cannot read the audit log (re-run --pc-token to re-provision)"; fi
   rm -f "$PROV"; PROV=""

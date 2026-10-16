@@ -10,6 +10,7 @@ import { PLATFORM_SCOPE, getMyOptOuts, getNotificationSettings, listOutbox, outb
 import { ActionButton } from "@/components/action-button";
 import { Alert, Badge, Card, EmptyState, Loading, PageHeader, fmtDate, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
 import { AddWebhookForm, EventTogglesForm, OptOutToggles } from "./notification-forms";
+import { SettingsTabs } from "../settings-shell";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -49,7 +50,7 @@ async function ScopeSettings({ user, scope, readOnly }: { user: SessionUser; sco
         <div className="space-y-3">
           <h3 className="text-sm font-semibold text-fg">Events</h3>
           <fieldset disabled={readOnly}>
-            <EventTogglesForm key={`${scope}-${s.updatedAt?.toISOString() ?? "new"}`} scope={scope} events={s.events} />
+            <EventTogglesForm key={`${scope}-${s.updatedAt?.toISOString() ?? "new"}`} scope={scope} events={s.events} readOnly={readOnly} />
           </fieldset>
         </div>
       </div>
@@ -148,6 +149,7 @@ async function NotificationsContent({ searchParams }: { searchParams: SearchPara
 
   return (
     <div className="space-y-6">
+      <SettingsTabs active="notifications" platformAdmin={platformAdmin} />
       {!notificationsConfigured() && (
         <Alert tone="warn">E-mail delivery is not configured (SMTP_URL / SMTP_FROM). Notifications are recorded in the outbox and skipped.</Alert>
       )}

@@ -36,3 +36,23 @@ export function currentWindow(w: WindowSpec, now: Date): { start: Date; end: Dat
     return null;
   }
 }
+
+/** Next start of the window after `now` (null for an invalid spec). */
+export function nextWindowOpening(w: Pick<WindowSpec, "cron" | "timezone">, now: Date): Date | null {
+  try {
+    return CronExpressionParser.parse(w.cron, { currentDate: now, tz: w.timezone }).next().toDate();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deployment note while it waits outside its maintenance window ("waiting for …" = WAITING_NOTE_PREFIX, so the
+ * progress view keeps it in the Queued stage), e.g. `waiting for the maintenance window "Sun 02:00" (next opens
+ * 2026-10-18 20:30 UTC)`.
+ */
+export function outsideWindowNote(w: Pick<WindowSpec, "cron" | "timezone"> & { name: string }, now: Date): string {
+  const next = nextWindowOpening(w, now);
+  const when = next ? `next opens ${next.toISOString().slice(0, 16).replace("T", " ")} UTC` : "its schedule is invalid — check Advanced settings › Maintenance windows";
+  return `waiting for the maintenance window "${w.name}" (${when})`;
+}

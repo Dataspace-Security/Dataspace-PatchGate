@@ -164,6 +164,43 @@ export async function ringCounts(tx: Tx, tenantId: string, crId: string): Promis
   return { succeeded, failed, notStarted };
 }
 
+/**
+ * Stop the part of a rollout that has not started: install jobs the connector has not picked up are withdrawn,
+ * deployments without a live job end FAILED (kind RING_STOPPED, "not started"); installs already handed to the
+ * site (or whose result is not applied yet) finish normally. Shared by the automatic ring stop and an admin's
+ * "Stop rollout". `sending: false` (legacy direct-Tactical bank, no jobs) leaves SENDING deployments alone: the
+ * legacy worker may be pushing them to Tactical right now.
+ */
+export async function stopNotStarted(
+  tx: Tx,
+  tenantId: string,
+  crId: string,
+  note: string,
+  jobReason: string,
+  now: Date,
+  audits: AuditBuffer,
+  opts: { sending?: boolean } = {},
+): Promise<{ stopped: number; cancelledJobs: number }> {
+  const cancelledJobs = await cancelQueuedJobs(tx, { tenantId, changeRequestId: crId, type: { in: installTypes } }, jobReason, now);
+  const sending = opts.sending === false ? [] : await tx.deployment.findMany({ where: { tenantId, changeRequestId: crId, status: "SENDING" }, select: { id: true } });
+  let stopped = 0;
+  for (const d of sending) {
+    // Live = the site holds the job, or its result arrived but is not applied yet (it decides the outcome).
+    const live = await tx.connectorJob.count({
+      where: {
+        deploymentId: d.id,
+        OR: [{ status: { in: ["QUEUED", "DELIVERED"] } }, { status: { in: ["SUCCEEDED", "FAILED"] }, processedAt: null }],
+      },
+    });
+    if (live === 0 && (await finish(tx, tenantId, d.id, "SENDING", "FAILED", note, { kind: "RING_STOPPED", audits, note }))) stopped++;
+  }
+  const queued = await tx.deployment.updateMany({
+    where: { tenantId, changeRequestId: crId, status: "QUEUED" },
+    data: { status: "FAILED", error: note, note, failureKind: "RING_STOPPED", finishedAt: now },
+  });
+  return { stopped: stopped + queued.count, cancelledJobs };
+}
+
 /** Stop a change request's rollout when too many installs fail. Returns how many deployments were stopped. */
 export async function stopRingIfFailing(tx: Tx, tenantId: string, crId: string, now: Date): Promise<number> {
   const { succeeded, failed, notStarted } = await ringCounts(tx, tenantId, crId);
@@ -172,19 +209,7 @@ export async function stopRingIfFailing(tx: Tx, tenantId: string, crId: string, 
   const rate = Math.round((failed / (succeeded + failed)) * 100);
   const note = `ring stopped: ${failed} of ${succeeded + failed} installs failed (${rate} %); not started`;
   const audits = new AuditBuffer();
-  // Jobs not yet picked up by the connector are withdrawn; delivered ones finish on the PC.
-  const cancelled = await cancelQueuedJobs(tx, { tenantId, changeRequestId: crId, type: { in: installTypes } }, "ring stopped", now);
-  const sending = await tx.deployment.findMany({ where: { tenantId, changeRequestId: crId, status: "SENDING" }, select: { id: true } });
-  let stopped = 0;
-  for (const d of sending) {
-    const live = await tx.connectorJob.count({ where: { deploymentId: d.id, status: "DELIVERED" } });
-    if (live === 0 && (await finish(tx, tenantId, d.id, "SENDING", "FAILED", note, { kind: "RING_STOPPED", audits }))) stopped++;
-  }
-  const queued = await tx.deployment.updateMany({
-    where: { tenantId, changeRequestId: crId, status: "QUEUED" },
-    data: { status: "FAILED", error: note, note, failureKind: "RING_STOPPED", finishedAt: now },
-  });
-  stopped += queued.count;
+  const { stopped, cancelledJobs: cancelled } = await stopNotStarted(tx, tenantId, crId, note, "ring stopped", now, audits);
   audits.push({
     tenantId,
     actor: "system",

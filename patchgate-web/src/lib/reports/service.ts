@@ -5,7 +5,7 @@ import { DomainError } from "@/lib/errors";
 import { resolveActiveTenant } from "@/lib/tenancy/context";
 import { withTenant } from "@/lib/tenancy/db";
 import { buildBankReport, buildPlatformSummary } from "./build";
-import { contentHash, csvLine } from "./csv";
+import { canonicalJson, contentHash, csvLine } from "./csv";
 import { nonCompliantPage } from "./fleet";
 import { renderBankReportHtml, renderPlatformSummaryHtml, tableCsv } from "./html";
 import { PeriodError, parsePeriod, type Period, type PeriodParams } from "./period";
@@ -102,6 +102,55 @@ function nonCompliantStream(tenantId: string): ReadableStream<Uint8Array> {
       }
     },
   });
+}
+
+const AUDIT_PAGE = 2_000;
+
+/**
+ * Streamed CSV of one bank's audit chain in a period (keyset pages by seq, one short RLS transaction each).
+ * Carries payload, prev_hash and hash so an auditor can re-check the chain offline against the SIEM anchors.
+ * Spreadsheet safety (csvCell): a text cell starting with = + - @ is prefixed with ' — strip that prefix before
+ * re-hashing actor / entity / entity_id (payload_json always starts with "{").
+ */
+function auditLogStream(tenantId: string, period: Period): ReadableStream<Uint8Array> {
+  let after = BigInt(0);
+  let headerSent = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        if (!headerSent) {
+          headerSent = true;
+          controller.enqueue(enc.encode(csvLine(["seq", "time_utc", "actor", "action", "entity", "entity_id", "payload_json", "prev_hash", "hash"])));
+          return;
+        }
+        const page = await withTenant(tenantId, (tx) =>
+          tx.auditEvent.findMany({
+            where: { tenantId, ts: { gte: period.from, lt: period.to }, seq: { gt: after } },
+            orderBy: { seq: "asc" },
+            take: AUDIT_PAGE,
+          }),
+        );
+        if (page.length === 0) {
+          controller.close();
+          return;
+        }
+        after = page[page.length - 1].seq;
+        controller.enqueue(
+          enc.encode(page.map((e) => csvLine([e.seq.toString(), e.ts.toISOString(), e.actor, e.action, e.entity, e.entityId, canonicalJson(e.payload), e.prevHash, e.hash])).join("")),
+        );
+        if (page.length < AUDIT_PAGE) controller.close();
+      } catch (err: unknown) {
+        controller.error(err);
+      }
+    },
+  });
+}
+
+/** The selected bank's audit events of a period as CSV (audited like every report export). */
+export async function exportAuditLogCsv(user: SessionUser, scope: ReportScope, period: Period): Promise<CsvExport> {
+  if (scope.kind !== "bank") throw new DomainError("Select a bank first: the audit log is exported per bank chain", 400);
+  await auditGenerated(user, scope, period, "csv", null, "audit-log"); // streamed: no content hash
+  return { filename: `patchgate-${slug(scope.bankName)}-audit-log-${period.from.toISOString().slice(0, 10)}.csv`, body: auditLogStream(scope.tenantId, period) };
 }
 
 export interface CsvExport {

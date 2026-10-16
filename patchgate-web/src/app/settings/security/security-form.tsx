@@ -12,7 +12,17 @@ interface Values {
   maxSessionsPerUser: number;
 }
 
-export function SecurityPolicyForm({ initial, sessionIdleMinutes, sessionMaxHours }: { initial: Values; sessionIdleMinutes: number; sessionMaxHours: number }) {
+export function SecurityPolicyForm({
+  initial,
+  sessionIdleMinutes,
+  sessionMaxHours,
+  readOnly = false,
+}: {
+  initial: Values;
+  sessionIdleMinutes: number;
+  sessionMaxHours: number;
+  readOnly?: boolean;
+}) {
   const router = useRouter();
   const [, start] = useTransition();
   const [v, setV] = useState<Values>(initial);
@@ -58,11 +68,13 @@ export function SecurityPolicyForm({ initial, sessionIdleMinutes, sessionMaxHour
             <Alert tone={msg.tone}>{msg.text}</Alert>
           </div>
         )}
-        <div className="md:col-span-3">
-          <button type="submit" disabled={busy} className={`${buttonBase} ${BUTTON.primary}`}>
-            {busy && <Loader2 size={15} className="animate-spin" />} Save policy
-          </button>
-        </div>
+        {!readOnly && (
+          <div className="md:col-span-3">
+            <button type="submit" disabled={busy} className={`${buttonBase} ${BUTTON.primary}`}>
+              {busy && <Loader2 size={15} className="animate-spin" />} Save policy
+            </button>
+          </div>
+        )}
       </form>
     </Card>
   );

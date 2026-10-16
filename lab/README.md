@@ -62,7 +62,9 @@ Every step can also run on its own:
 | Script | Does |
 |---|---|
 | `lab/tactical/up.sh` | Starts the real Tactical. **Fails if any container can reach the internet** (raw IP + DNS). |
-| `lab/tactical/provision.sh` | Service account + API key, client/site, the 3 scripts, manual patch policy. **Rotates the API key**; `connector/up.sh` copies the new key. |
+| `lab/tactical/provision.sh [--rotate-key]` | Runs the bank site's own `installers/site/tactical/provision-site.py`: service account + API key (kept unless `--rotate-key`; `connector/up.sh` copies it), client/site, the 3 scripts, manual patch policies and the **seal** (dashboard login blocked, other API keys expired, agent auto-update off). `up-all.sh` re-runs it when `provision.json` predates the seal. |
+| `lab/tactical/break-glass.sh on\|off\|check` | Lab equivalent of `install-site.sh --break-glass on/off` / `--status` (same `break-glass.py`); the lab's Tactical admin (`TRMM_USER`, labadmin) plays the break-glass account. PatchGate shows it under Connectors → Tactical activity within ~1 min. |
+| `lab/fixtures/sim-tactical-agent.sh create\|approve <KB>\|status\|remove` | **Lab only**: a simulated PC (`LAB-SIM-PC01`, 3 Windows updates) in Tactical's database, because the lab has no Windows PC. `approve` = what a person does in the Tactical dashboard; the connector guard resets it within ~30 s. Everything the PC itself does (install, reboot, WU lock) needs the VMware Windows VM. |
 | `lab/patchgate/start.sh` | PatchGate (hosted). `LAB_MODE=dev` gives the old single-bank dev mode (`http://localhost:3000`, dev user switcher, direct Tactical link). `LAB_MODE=dev LAB_HTTPS=1` serves dev mode on :3443. Only one `next dev` per `patchgate-web`. |
 | `lab/patchgate/users.sh` | Local accounts via `scripts/admin/create-user.ts`. Bank users are created once `bank-a` exists. |
 | `lab/connector/enroll.sh [--force]` | Over the real admin API: bank `bank-a`, its app opt-ins, a one-time code, then `patchgate-connector init` with `--job-key-fingerprint` (the out-of-band pin). |
@@ -76,7 +78,7 @@ C="--ssl-no-revoke --cacert lab/certs/out/ca.crt --resolve pg-cache.patchgate-la
 curl $C -o putty.msi https://pg-cache.patchgate-lab.internal:8443/repo/pkgs/PuTTY.PuTTY/0.85.0.0/PuTTY.PuTTY-0.85.0.0.msi   # 200, sha256 = DB
 curl $C --path-as-is https://pg-cache.patchgate-lab.internal:8443/repo/../../etc/passwd                                     # 404
 node lab/siem/check.mjs bank-a-connector-hq
-cd patchgate-web && npx playwright test -c playwright.lab.config.ts          # UI journey, screenshots in e2e-lab/screenshots
+cd patchgate-web && npx playwright test -c playwright.lab.config.ts          # UI regression suite (hosted-lab + features specs), screenshots in e2e-lab/screenshots
 ```
 
 ## Windows Sandbox "Bank A PC" (after the restart)

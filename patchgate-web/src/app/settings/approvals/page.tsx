@@ -23,7 +23,7 @@ async function Approvals() {
       {header}
       {readOnly && <ReadOnlyNotice />}
       <fieldset disabled={readOnly} className={readOnly ? "mt-4 opacity-80" : undefined}>
-        <ApprovalPolicyForm initial={policy} />
+        <ApprovalPolicyForm initial={policy} readOnly={readOnly} />
       </fieldset>
     </>
   );
