@@ -17,6 +17,10 @@
 Dockerfile text eol=lf
 VERSION text eol=lf
 
+# Windows batch files need CRLF (cmd.exe misparses labels / multi-line blocks with LF).
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
 # Binary: never touch line endings, never diff.
 *.pem  binary
 *.key  binary
