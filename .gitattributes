@@ -1,0 +1,39 @@
+# PatchGate repository attributes.
+# Everything that runs in Linux containers or on the server (sh, mjs, conf, yml, Dockerfile) must stay LF,
+# and the endpoint PowerShell scripts must be byte-stable (their SHA-256 / signatures are pinned), so the
+# whole tree is normalised to LF on checkout on every OS (also on Windows).
+* text=auto eol=lf
+
+# Explicit text types (documentation for reviewers; same rule as above).
+*.sh   text eol=lf
+*.ps1  text eol=lf
+*.psm1 text eol=lf
+*.mjs  text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.sql  text eol=lf
+Dockerfile text eol=lf
+VERSION text eol=lf
+
+# Binary: never touch line endings, never diff.
+*.pem  binary
+*.key  binary
+*.crt  binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.svg  text eol=lf
+*.woff binary
+*.woff2 binary
+*.zip  binary
+*.gz   binary
+*.tgz  binary
+*.tar  binary
+*.cab  binary
+*.msi  binary
+*.exe  binary
+
+# Lock files: generated (still diffed: dependency changes must be reviewable).
+package-lock.json linguist-generated=true

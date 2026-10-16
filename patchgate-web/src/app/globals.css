@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+/* Theme is driven by <html data-theme="light|dark"> (set before paint, see layout.tsx). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  color-scheme: light;
+  --bg: #f4f6fb;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --sidebar: #0b1730;
+  --sidebar-fg: #c9d4ea;
+  --sidebar-active: #16284d;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --fg: #0f172a;
+  --muted: #64748b;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-fg: #ffffff;
+  --primary-soft: #dbeafe;
+  --accent: #0d9488;
+  --success: #15803d;
+  --success-soft: #dcfce7;
+  --warning: #b45309;
+  --warning-soft: #fef3c7;
+  --danger: #b91c1c;
+  --danger-soft: #fee2e2;
+  --info: #1d4ed8;
+  --info-soft: #dbeafe;
+  --busy: #6d28d9;
+  --busy-soft: #ede9fe;
+  --neutral-soft: #f1f5f9;
+  --ring: #93c5fd;
+  --shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 1px 3px rgb(15 23 42 / 0.06);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a0f1c;
+  --surface: #111827;
+  --surface-2: #0f172a;
+  --sidebar: #070c18;
+  --sidebar-fg: #a8b6d1;
+  --sidebar-active: #15223f;
+  --border: #1f2a3d;
+  --border-strong: #2b3a55;
+  --fg: #e5ebf5;
+  --muted: #8b9ab3;
+  --primary: #3b82f6;
+  --primary-hover: #60a5fa;
+  --primary-fg: #ffffff;
+  --primary-soft: #172554;
+  --accent: #2dd4bf;
+  --success: #4ade80;
+  --success-soft: #052e1a;
+  --warning: #fbbf24;
+  --warning-soft: #3a2a06;
+  --danger: #f87171;
+  --danger-soft: #3b0d0d;
+  --info: #60a5fa;
+  --info-soft: #102044;
+  --busy: #a78bfa;
+  --busy-soft: #24124a;
+  --neutral-soft: #1a2436;
+  --ring: #1d4ed8;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 1px 3px rgb(0 0 0 / 0.3);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-fg: var(--sidebar-fg);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-fg: var(--primary-fg);
+  --color-primary-soft: var(--primary-soft);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-busy: var(--busy);
+  --color-busy-soft: var(--busy-soft);
+  --color-neutral-soft: var(--neutral-soft);
+  --color-ring: var(--ring);
+  --shadow-card: var(--shadow);
+  --font-sans: "Segoe UI", system-ui, -apple-system, "Inter", sans-serif;
+  --font-mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+}
+
+/* Smooth theme switch without animating layout */
+body,
+.surface-transition {
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--primary-soft);
+}

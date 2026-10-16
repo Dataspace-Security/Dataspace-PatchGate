@@ -1,0 +1,39 @@
+# PatchGate — Prometheus (compose profile "monitoring", docs/RUNBOOK.md §8).
+#
+# Scrapes /api/metrics on every web instance directly over the internal `app` network (not through nginx;
+# the edge blocks /api/metrics outside allowlists/health.conf anyway). The bearer token is METRICS_TOKEN
+# (same value in deploy/.env.production and deploy/secrets/metrics_token).
+#
+# Every instance exports the same platform-wide aggregates (they read the shared database); alert rules
+# therefore aggregate with max/min by the business labels, so two instances never double-alert.
+
+global:
+  scrape_interval: 30s
+  scrape_timeout: 20s
+  evaluation_interval: 30s
+  external_labels:
+    platform: patchgate
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: patchgate
+    metrics_path: /api/metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/metrics_token
+    static_configs:
+      - targets: ["web-1:3000", "web-2:3000"]
+    # The first scrape after a restart may compute the 5-minute tier (fleet-wide compliance).
+    scrape_timeout: 25s
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

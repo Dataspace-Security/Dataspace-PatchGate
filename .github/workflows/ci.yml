@@ -1,0 +1,163 @@
+# PatchGate CI — every pull request and every push to main.
+# Same gates as release/release.sh (which runs them again before any release):
+#   web        typecheck · lint · unit · prisma migrate deploy · integration (Postgres service container)
+#   connector  protocol sync · tests · bundle build · version vs VERSION
+#   scripts    PowerShell parser · bash -n · shellcheck · secret/artifact audit · actionlint
+#   images     docker build of every image (no push), signer unit tests
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  web:
+    name: web (typecheck, lint, unit, integration)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: patchgate
+          # Throwaway CI database on the runner only — not a secret.
+          POSTGRES_PASSWORD: patchgate-ci-test-only
+          POSTGRES_DB: patchgate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U patchgate -d patchgate_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgresql://patchgate:patchgate-ci-test-only@127.0.0.1:5432/patchgate_test?schema=public
+    defaults:
+      run:
+        working-directory: patchgate-web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: patchgate-web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Generate Next.js route types (PageProps, LayoutProps, RouteContext; git-ignored)
+        run: npx next typegen
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - name: Apply migrations to the test database
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+      - name: Integration tests
+        run: npm run test:int
+      - name: npm audit (production dependencies, report only)
+        run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit reported high/critical advisories in production dependencies"
+
+  connector:
+    name: connector (protocol sync, tests, bundle)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: patchgate-connector
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: patchgate-connector/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - name: Protocol sync + tests
+        run: npm test
+      - run: npm run build
+      - name: Connector version vs VERSION
+        run: |
+          want="$(tr -d ' \r\n' < ../VERSION)"
+          got="$(node dist/patchgate-connector.mjs version)"
+          echo "VERSION=$want connector=$got"
+          if [ "$want" != "$got" ]; then
+            echo "::warning file=patchgate-connector/package.json::connector version $got differs from VERSION $want (release.sh will refuse to release)"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patchgate-connector-bundle
+          path: patchgate-connector/dist/patchgate-connector.mjs
+          retention-days: 14
+
+  scripts:
+    name: scripts, secret audit, workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: PowerShell parse + bash -n + shellcheck
+        run: bash release/check-scripts.sh
+      - name: Secret / artifact audit of the tree
+        run: bash release/audit-tree.sh
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color .github/workflows/ci.yml .github/workflows/release.yml
+
+  images:
+    name: image ${{ matrix.image.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: patchgate-web, context: patchgate-web, target: runner }
+          - { name: patchgate-tools, context: patchgate-web, target: tools }
+          - { name: patchgate-connector, context: patchgate-connector, target: "" }
+          - { name: patchgate-signer-test, context: deploy/signer, target: test }
+          - { name: patchgate-signer, context: deploy/signer, target: runtime }
+          - { name: patchgate-egress-proxy, context: deploy/egress-proxy, target: "" }
+          - { name: patchgate-backup, context: deploy/backup, target: "" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: meta
+        run: |
+          v="$(tr -d ' \r\n' < VERSION)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          # Next.js deploymentId allows only [A-Za-z0-9_-] (see patchgate-web/src/lib/version.ts)
+          echo "build_id=${v//./_}-ci${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          target: ${{ matrix.image.target }}
+          push: false
+          load: false
+          build-args: |
+            PATCHGATE_BUILD_ID=${{ steps.meta.outputs.build_id }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image.name }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.vendor=Dataspace
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}

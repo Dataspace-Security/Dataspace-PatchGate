@@ -1,0 +1,28 @@
+# Vendor hosts the fetcher may reach (squid dstdomain; a leading dot also matches subdomains).
+# Keep in sync with the app allow-lists: src/lib/fetch/winget.ts (WINGET_HOSTS), src/lib/fetch/tactical.ts
+# (GITHUB_HOSTS), src/lib/discovery/winget-index.ts (WINGET_INDEX_HOSTS) and each App's allowedDomains.
+# Apps with strictHosts=false follow redirects to vendor mirror networks (e.g. VLC): add those mirror
+# hosts here after review, or the download is blocked (squid logs result=TCP_DENIED).
+# Restart egress-proxy after editing.
+
+# winget manifests + GitHub releases (Tactical agent/server mirror)
+api.github.com
+github.com
+codeload.github.com
+raw.githubusercontent.com
+objects.githubusercontent.com
+release-assets.githubusercontent.com
+
+# winget source index
+cdn.winget.microsoft.com
+
+# Vendor installers (examples from the default catalogue — review per App)
+dl.google.com
+get.videolan.org
+www.7-zip.org
+www.wireshark.org
+
+# Microsoft Update content (only if the platform fetches Windows content itself)
+# .download.windowsupdate.com
+# .delivery.mp.microsoft.com
+# catalog.update.microsoft.com

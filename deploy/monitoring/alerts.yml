@@ -1,0 +1,164 @@
+# PatchGate alert rules — mirror docs/RUNBOOK.md §8 and the red thresholds of
+# patchgate-web/src/lib/metrics/thresholds.ts (the /operations dashboard). Change them together.
+#
+# Labels: severity = critical | warning | info (Alertmanager routing), priority = P1 | P2 | P3 (RUNBOOK).
+# Metrics come from every web instance with identical values: aggregate with max/min by business labels.
+
+groups:
+  - name: patchgate-recording
+    interval: 30s
+    rules:
+      - record: patchgate:jobs_queued:sum
+        expr: sum by (bank) (max without (instance) (patchgate_jobs_open{status="QUEUED"}))
+      - record: patchgate:jobs_failed_24h:sum
+        expr: sum by (bank) (max without (instance) (patchgate_jobs_failed_24h))
+      - record: patchgate:jobs_finished_24h:sum
+        expr: patchgate:jobs_failed_24h:sum + on (bank) max by (bank) (patchgate_jobs_succeeded_24h)
+
+  - name: patchgate-availability
+    rules:
+      - alert: PatchGateInstanceDown
+        expr: up{job="patchgate"} == 0
+        for: 2m
+        labels: { severity: critical, priority: P1 }
+        annotations:
+          summary: "PatchGate web instance {{ $labels.instance }} is not answering /api/metrics"
+          runbook: "docs/RUNBOOK.md §8 (Liveness) — container health, restart count, logs"
+      - alert: PatchGateNotReady
+        expr: patchgate_ready == 0
+        for: 2m
+        labels: { severity: critical, priority: P1 }
+        annotations:
+          summary: "{{ $labels.instance }} reports ready=false (taken out of rotation)"
+          description: "Failing checks: query patchgate_readiness_check == 0 for this instance."
+          runbook: "docs/RUNBOOK.md §8 (Readiness)"
+      - alert: PatchGateMetricsPartFailing
+        expr: max by (part) (patchgate_metrics_collect_errors) > 0
+        for: 15m
+        labels: { severity: warning, priority: P3 }
+        annotations:
+          summary: "Monitoring snapshot part {{ $labels.part }} keeps failing (log metrics.collect.part_failed)"
+
+  - name: patchgate-worker
+    rules:
+      - alert: PatchGateWorkerStepStale
+        expr: time() - max by (step) (patchgate_worker_step_last_success_timestamp_seconds) > 300
+        for: 1m
+        labels: { severity: critical, priority: P1 }
+        annotations:
+          summary: "Worker step {{ $labels.step }} has not succeeded for {{ $value | humanizeDuration }}"
+          description: "step=tick means the scheduler stopped calling /api/worker/tick (deployments and SIEM export stop)."
+          runbook: "docs/RUNBOOK.md §8 (Scheduler)"
+      - alert: PatchGateWorkerNeverRan
+        expr: absent(patchgate_worker_step_last_success_timestamp_seconds{step="tick"})
+        for: 10m
+        labels: { severity: critical, priority: P1 }
+        annotations:
+          summary: "No successful worker tick has ever been recorded"
+          runbook: "docs/RUNBOOK.md §8 (Scheduler) — scheduler container, WORKER_TOKEN"
+
+  - name: patchgate-banks
+    rules:
+      - alert: PatchGateConnectorOffline
+        expr: max by (bank, connector) (patchgate_connector_last_seen_age_seconds) > 600
+        for: 1m
+        labels: { severity: warning, priority: P2 }
+        annotations:
+          summary: "Connector {{ $labels.connector }} of {{ $labels.bank }} offline for {{ $value | humanizeDuration }}"
+          runbook: "docs/RUNBOOK.md §8 (Connector last seen) — contact the bank"
+      - alert: PatchGateConnectorOfflineLong
+        expr: max by (bank, connector) (patchgate_connector_last_seen_age_seconds) > 14400
+        for: 1m
+        labels: { severity: critical, priority: P1 }
+        annotations:
+          summary: "Connector {{ $labels.connector }} of {{ $labels.bank }} offline for more than 4 h"
+          description: "P1 if a maintenance window is open for this site."
+      - alert: PatchGateJobQueuedTooLong
+        expr: max by (bank) (patchgate_jobs_oldest_queued_age_seconds) > 3600
+        for: 5m
+        labels: { severity: warning, priority: P2 }
+        annotations:
+          summary: "{{ $labels.bank }}: a due connector job has been queued for {{ $value | humanizeDuration }}"
+          description: "Connector not polling, or install concurrency exhausted. Check /operations and the bank's connectors."
+      - alert: PatchGateJobBacklogGrowing
+        expr: (patchgate:jobs_queued:sum - patchgate:jobs_queued:sum offset 1h) > 100 and patchgate:jobs_queued:sum > 200
+        for: 15m
+        labels: { severity: warning, priority: P2 }
+        annotations:
+          summary: "{{ $labels.bank }}: queued connector jobs grew by {{ $value }} in the last hour"
+      - alert: PatchGateJobFailureRate
+        expr: (patchgate:jobs_failed_24h:sum / patchgate:jobs_finished_24h:sum) > 0.10 and patchgate:jobs_finished_24h:sum >= 20
+        for: 15m
+        labels: { severity: warning, priority: P2 }
+        annotations:
+          summary: "{{ $labels.bank }}: {{ $value | humanizePercentage }} of connector jobs failed or expired (24 h)"
+          runbook: "docs/RUNBOOK.md §8 (Job failure rate)"
+      - alert: PatchGateApprovalWaiting
+        expr: max by (bank) (patchgate_change_requests_pending_approval_oldest_age_seconds) > 86400
+        for: 5m
+        labels: { severity: warning, priority: P3 }
+        annotations:
+          summary: "{{ $labels.bank }}: a change request has waited {{ $value | humanizeDuration }} for approval"
+      - alert: PatchGateNotificationBacklog
+        expr: max by (bank) (patchgate_notification_outbox_oldest_age_seconds) > 1800
+        for: 10m
+        labels: { severity: warning, priority: P3 }
+        annotations:
+          summary: "{{ $labels.bank }}: notifications undelivered for {{ $value | humanizeDuration }}"
+
+  - name: patchgate-integrity
+    rules:
+      - alert: PatchGateAuditChainBroken
+        expr: min by (chain) (patchgate_audit_chain_valid) == 0
+        for: 0m
+        labels: { severity: critical, priority: P1 }
+        annotations:
+          summary: "Audit chain {{ $labels.chain }} FAILED verification — possible tampering"
+          runbook: "docs/RUNBOOK.md §9.5 (security incident)"
+      - alert: PatchGateSiemExportLag
+        expr: max by (chain) (patchgate_siem_export_lag_seconds) > 900 and on () max(patchgate_siem_configured) == 1
+        for: 5m
+        labels: { severity: warning, priority: P2 }
+        annotations:
+          summary: "SIEM export of chain {{ $labels.chain }} is {{ $value | humanizeDuration }} behind"
+          runbook: "docs/RUNBOOK.md §8 (SIEM export)"
+      - alert: PatchGateSiemExportLagCritical
+        expr: max by (chain) (patchgate_siem_export_lag_seconds) > 7200 and on () max(patchgate_siem_configured) == 1
+        for: 5m
+        labels: { severity: critical, priority: P1 }
+        annotations:
+          summary: "SIEM export of chain {{ $labels.chain }} is more than 2 h behind (evidence gap)"
+
+  - name: patchgate-capacity
+    rules:
+      - alert: PatchGateRepoQuotaHigh
+        expr: max(patchgate_repo_used_bytes) / max(patchgate_repo_quota_bytes) > 0.85
+        for: 10m
+        labels: { severity: warning, priority: P3 }
+        annotations:
+          summary: "Shared repository at {{ $value | humanizePercentage }} of REPO_MAX_GB"
+      - alert: PatchGateRepoQuotaExceeded
+        expr: min(patchgate_repo_quota_ok) == 0
+        for: 5m
+        labels: { severity: warning, priority: P2 }
+        annotations:
+          summary: "Shared repository over quota — Windows update downloads are paused"
+      - alert: PatchGateTlsCertExpiring
+        expr: (min(patchgate_tls_cert_expiry_timestamp_seconds) - time()) < 21 * 86400
+        for: 1h
+        labels: { severity: warning, priority: P2 }
+        annotations:
+          summary: "PUBLIC_BASE_URL certificate expires in {{ $value | humanizeDuration }}"
+          runbook: "docs/RUNBOOK.md §4.5 (TLS certificate)"
+      - alert: PatchGateTlsCertExpiringSoon
+        expr: (min(patchgate_tls_cert_expiry_timestamp_seconds) - time()) < 7 * 86400
+        for: 10m
+        labels: { severity: critical, priority: P1 }
+        annotations:
+          summary: "PUBLIC_BASE_URL certificate expires in {{ $value | humanizeDuration }}"
+      - alert: PatchGateFetchStale
+        expr: time() - max by (source) (patchgate_fetch_last_success_timestamp_seconds) > 26 * 3600
+        for: 30m
+        labels: { severity: info, priority: P3 }
+        annotations:
+          summary: "No successful {{ $labels.source }} fetch for {{ $value | humanizeDuration }} (P2 on Patch Tuesday)"

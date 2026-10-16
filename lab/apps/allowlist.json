@@ -1,0 +1,13 @@
+[
+  { "wingetId": "Microsoft.PowerShell", "displayName": "PowerShell 7", "inventoryMatch": "^PowerShell 7", "expectedPublisher": "O=Microsoft Corporation", "allowedDomains": ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"] },
+  { "wingetId": "Git.Git", "displayName": "Git for Windows", "inventoryMatch": "^Git$", "expectedPublisher": "O=Johannes Schindelin", "allowedDomains": ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"] },
+  { "wingetId": "Mozilla.Firefox", "displayName": "Mozilla Firefox", "inventoryMatch": "^Mozilla Firefox", "expectedPublisher": "O=Mozilla Corporation", "allowedDomains": ["download-installer.cdn.mozilla.net"] },
+  { "wingetId": "Zoom.Zoom", "displayName": "Zoom Workplace", "inventoryMatch": "^Zoom", "expectedPublisher": "O=Zoom Communications, Inc.", "allowedDomains": ["zoom.us", "cdn.zoom.us"] },
+  { "wingetId": "PuTTY.PuTTY", "displayName": "PuTTY", "inventoryMatch": "^PuTTY", "expectedPublisher": "O=Simon Tatham", "allowedDomains": ["the.earth.li"] },
+  { "wingetId": "WiresharkFoundation.Wireshark", "displayName": "Wireshark", "inventoryMatch": "^Wireshark", "expectedPublisher": "O=Wireshark Foundation", "allowedDomains": ["2.na.dl.wireshark.org", "1.na.dl.wireshark.org", "1.eu.dl.wireshark.org", "2.eu.dl.wireshark.org"] },
+  { "wingetId": "EclipseAdoptium.Temurin.21.JRE", "displayName": "Temurin 21 JRE", "inventoryMatch": "^Eclipse Temurin JRE .*21", "expectedPublisher": "O=Eclipse Foundation; O=Eclipse.org Foundation, Inc.", "allowedDomains": ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"] },
+  { "wingetId": "VideoLAN.VLC", "displayName": "VLC media player", "inventoryMatch": "^VLC media player", "expectedPublisher": "O=VideoLAN", "allowedDomains": ["download.videolan.org", "get.videolan.org"] },
+  { "wingetId": "7zip.7zip", "displayName": "7-Zip", "inventoryMatch": "^7-Zip", "expectedPublisher": "O=Igor Pavlov", "allowedDomains": ["www.7-zip.org", "github.com", "release-assets.githubusercontent.com"] },
+  { "wingetId": "Google.Chrome", "displayName": "Google Chrome", "inventoryMatch": "^Google Chrome$", "expectedPublisher": "O=Google LLC", "allowedDomains": ["dl.google.com"] },
+  { "wingetId": "Notepad++.Notepad++", "displayName": "Notepad++", "inventoryMatch": "^Notepad\\+\\+", "expectedPublisher": "O=NOTEPAD++", "allowedDomains": ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"] }
+]

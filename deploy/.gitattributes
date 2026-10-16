@@ -1,0 +1,3 @@
+# Scripts and configs run inside Linux containers: always LF.
+* text=auto eol=lf
+*.pem binary

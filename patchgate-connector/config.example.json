@@ -1,0 +1,49 @@
+{
+  "stateDir": "/var/lib/patchgate-connector",
+  "logLevel": "info",
+  "tactical": {
+    "url": "https://rmm-api.bank.local",
+    "apiKeyFile": "/etc/patchgate-connector/tactical-api-key",
+    "caFile": "/etc/patchgate-connector/bank-ca.pem",
+    "installScriptId": 12,
+    "installScriptTimeoutSec": 900,
+    "wuScanScriptId": 13,
+    "wuInstallScriptId": 14,
+    "timeoutMs": 30000,
+    "statusIntervalSec": 300,
+    "maxParallelCalls": 8
+  },
+  "cache": {
+    "baseUrl": "https://pgcache.bank.local:8443/repo",
+    "listenHost": "0.0.0.0",
+    "port": 8443,
+    "tls": {
+      "certFile": "/etc/patchgate-connector/cache-cert.pem",
+      "keyFile": "/etc/patchgate-connector/cache-key.pem"
+    },
+    "maxPackageBytes": 4294967296,
+    "minFreeBytes": 1073741824,
+    "maxCacheBytes": 53687091200,
+    "maxConcurrentDownloads": 50,
+    "perClientConcurrency": 2,
+    "bandwidthLimitMbps": 200,
+    "retryAfterSec": 30
+  },
+  "limits": {
+    "maxConcurrentInstalls": 50,
+    "maxConcurrentOtherJobs": 4,
+    "maxQueuedJobs": 200,
+    "heartbeatIntervalSec": 60,
+    "pollWaitSec": 25,
+    "shutdownGraceSec": 60,
+    "journalRetentionDays": 30,
+    "journalMaxBytes": 67108864
+  },
+  "siem": {
+    "url": "tls://siem.bank.local:6514",
+    "caFile": "/etc/patchgate-connector/bank-ca.pem",
+    "hostname": "patchgate-connector-hq",
+    "pollIntervalSec": 30,
+    "batchSize": 500
+  }
+}

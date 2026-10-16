@@ -1,0 +1,127 @@
+# PatchGate bank site — override for Tactical RMM's official docker-compose.yml (shipped next to this file).
+# Used by install-site.sh:
+#   docker compose -p patchgate-site --env-file /opt/patchgate-site/site.env \
+#     -f tactical/docker-compose.yml -f tactical/docker-compose.site.yml up -d
+#
+# Network position (docs/ARCHITECTURE-HOSTED.md): Tactical and the PCs never reach the internet.
+#  - every Tactical network is `internal: true` (no outbound route at all);
+#  - site-ingress (socat, no Tactical code) is the ONLY container publishing ports: 443/80 -> Tactical nginx,
+#    CACHE_PORT -> the connector's package cache. TLS terminates in Tactical nginx / the connector;
+#  - the connector sits on the Tactical LAN + "pg-egress" (internal). Its ONLY way out is site-egress, a TCP
+#    forwarder to exactly ONE destination: our PatchGate server (plus, optionally, the bank SIEM);
+#  - Tactical containers are NOT on pg-egress, so they cannot reach PatchGate either.
+networks:
+  proxy:
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: ${SITE_LAN_SUBNET}
+  api-db:
+    internal: true
+  redis:
+    internal: true
+  mesh-db:
+    internal: true
+  pg-egress:
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: ${SITE_EGRESS_SUBNET}
+  edge:
+    driver: bridge
+  wan:
+    driver: bridge
+
+volumes:
+  connector-state: {} # connector key (0600), journal, cache index, cached packages
+
+services:
+  tactical-nginx:
+    ports: !reset []
+    networks:
+      proxy:
+        ipv4_address: ${NGINX_IP}
+
+  tactical-meshcentral:
+    # Offline MeshCentral: the stock image npm-installs modules from the internet at runtime.
+    image: patchgate-site/tactical-meshcentral-offline:${VERSION}
+    environment:
+      NGINX_HOST_IP: ${NGINX_IP}
+
+  site-ingress:
+    container_name: pg-site-ingress
+    image: ${SOCAT_IMAGE}
+    restart: always
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        socat TCP-LISTEN:4443,fork,reuseaddr TCP:${NGINX_IP}:4443 &
+        socat TCP-LISTEN:8080,fork,reuseaddr TCP:${NGINX_IP}:8080 &
+        socat TCP-LISTEN:8443,fork,reuseaddr TCP:${CONNECTOR_IP}:8443 &
+        wait
+    ports:
+      - "${BIND_IP}:443:4443"
+      - "${BIND_IP}:80:8080"
+      - "${BIND_IP}:${CACHE_PORT}:8443"
+    networks:
+      proxy:
+        ipv4_address: ${INGRESS_IP}
+      edge: {}
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  # The connector's only route out: TCP to our PatchGate server (and the bank SIEM if configured).
+  site-egress:
+    container_name: pg-site-egress
+    image: ${SOCAT_IMAGE}
+    restart: always
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        socat TCP-LISTEN:${PG_PORT},fork,reuseaddr TCP:${PG_TARGET}:${PG_PORT} &
+        socat TCP-LISTEN:${SIEM_PORT},fork,reuseaddr TCP:${SIEM_TARGET}:${SIEM_PORT} &
+        wait
+    networks:
+      pg-egress:
+        ipv4_address: ${EGRESS_IP}
+      wan: {}
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+
+  connector:
+    container_name: pg-site-connector
+    image: ${CONNECTOR_IMAGE}
+    restart: unless-stopped
+    command: ["run"]
+    read_only: true
+    user: "1000:1000"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    volumes:
+      # connector.json, tactical-api-key, CAs, cache TLS cert/key. Read-only except during `init` (ETC_MODE=rw).
+      - ${SITE_DIR}/etc:/etc/patchgate-connector:${ETC_MODE:-ro}
+      - connector-state:/var/lib/patchgate-connector
+    extra_hosts:
+      - "${PG_HOST}:${EGRESS_IP}"
+      - "${SIEM_HOST}:${EGRESS_IP}"
+      - "api.${SITE_DOMAIN}:${NGINX_IP}"
+    networks:
+      proxy:
+        ipv4_address: ${CONNECTOR_IP}
+      pg-egress:
+        ipv4_address: ${CONNECTOR_EGRESS_IP}
+    depends_on:
+      - site-egress
+    stop_grace_period: 90s
+    mem_limit: 512m
+    cpus: 2
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }

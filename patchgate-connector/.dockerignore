@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+test
+*.log
+config.example.json
+docker-compose.example.yml
+deploy

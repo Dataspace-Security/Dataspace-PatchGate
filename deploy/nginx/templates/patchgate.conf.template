@@ -1,0 +1,201 @@
+# PatchGate virtual host — envsubst template rendered at container start (PATCHGATE_HOSTNAME from .env.production).
+# Certificate chain + key: deploy/tls/fullchain.pem and deploy/tls/privkey.pem.
+
+# Internal health endpoint for the container HEALTHCHECK (not published).
+server {
+  listen 127.0.0.1:8081;
+  access_log off;
+  location = /nginx-health { return 200 "ok\n"; }
+  location / { return 404; }
+}
+
+# Plain HTTP: redirect only (ACME http-01 challenges can be served from here if you use them).
+server {
+  listen 80 default_server;
+  server_name _;
+  location / { return 308 https://$host$request_uri; }
+}
+
+# Unknown Host header over TLS: drop (no default site, no cert leak beyond the one configured).
+server {
+  listen 443 ssl default_server;
+  http2 on;
+  server_name _;
+  ssl_certificate     /etc/nginx/tls/fullchain.pem;
+  ssl_certificate_key /etc/nginx/tls/privkey.pem;
+  return 444;
+}
+
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name ${PATCHGATE_HOSTNAME};
+
+  # ---- TLS (Mozilla "intermediate": TLS 1.2 + 1.3)
+  ssl_certificate     /etc/nginx/tls/fullchain.pem;
+  ssl_certificate_key /etc/nginx/tls/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+  ssl_prefer_server_ciphers off;
+  ssl_session_cache shared:pg_tls:10m;
+  ssl_session_timeout 1d;
+  ssl_session_tickets off;
+
+  limit_conn pg_conn 200;
+
+  # ---- security headers: the APP sets CSP, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy,
+  # COOP (src/lib/http/security-headers.ts) and they pass through untouched. The edge owns HSTS so it is
+  # also present on nginx-generated responses (errors, 429).
+  proxy_hide_header Strict-Transport-Security;
+  proxy_hide_header X-Powered-By;
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Request-Id $request_id always;
+
+  # ---- upstream defaults
+  proxy_http_version 1.1;
+  proxy_set_header Connection "";
+  proxy_set_header Host $host;
+  # nginx is the FIRST trusted hop: overwrite (never append) X-Forwarded-For so clients cannot spoof
+  # it. Matches TRUST_PROXY_HOPS=1. If a cloud LB/WAF sits in front of nginx, use the realip module
+  # (set_real_ip_from <LB CIDR>; real_ip_header X-Forwarded-For;) and keep this line unchanged.
+  proxy_set_header X-Forwarded-For $remote_addr;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-Proto https;
+  # $http_host keeps a non-default port (e.g. :8443) so the app's same-origin check matches the browser Origin.
+  proxy_set_header X-Forwarded-Host $http_host;
+  proxy_set_header X-Request-Id $request_id;
+  proxy_connect_timeout 5s;
+  proxy_send_timeout 60s;
+  proxy_read_timeout 60s;
+  # App Router streams (RSC / Suspense): no buffering.
+  proxy_buffering off;
+  proxy_request_buffering on;
+  # Retry another instance only when the request never reached the app or it is clearly down.
+  proxy_next_upstream error timeout http_502 http_503;
+  proxy_next_upstream_tries 2;
+  proxy_next_upstream_timeout 10s;
+
+  # ---- never exposed at the edge
+  # Worker endpoints are called by the scheduler on the internal network only.
+  location ^~ /api/worker/   { return 404; }
+  # Development-only identity switcher.
+  location ^~ /api/dev-login { return 404; }
+  location ^~ /dev-login     { return 404; }
+
+  # ---- liveness (public, no details) / readiness (internal health network + load balancer only:
+  # allowlists/health.conf; everyone else gets 404). Monitoring outside that list: probe /api/health.
+  location = /api/health { limit_req zone=pg_general burst=20 nodelay; proxy_pass http://patchgate_web; }
+  location = /api/ready  {
+    if ($health_ip_allowed = 0) { return 404; }
+    limit_req zone=pg_general burst=20 nodelay;
+    proxy_pass http://patchgate_web;
+  }
+  # Prometheus metrics: same allow-list as /api/ready (others get 404) + bearer METRICS_TOKEN in the app.
+  # The bundled Prometheus (profile "monitoring") scrapes web-1/web-2 directly and never comes through here.
+  location = /api/metrics {
+    if ($health_ip_allowed = 0) { return 404; }
+    limit_req zone=pg_general burst=20 nodelay;
+    proxy_pass http://patchgate_web;
+  }
+
+  # ---- sign-in endpoints: tight edge limit (app adds lockout after 5 failures)
+  location ^~ /api/auth/ {
+    limit_req zone=pg_auth burst=10 nodelay;
+    proxy_pass http://patchgate_web;
+  }
+
+  # ---- connector API (banks connect OUT to us). Per-bank IP allow-list, default deny
+  # (allowlists/connectors.conf + allowlists/connectors.d/<bank>.conf).
+  # Long poll: GET /api/connector/v1/jobs?wait=25 → upstream timeout must exceed 25 s (+ margin).
+  location ^~ /api/connector/v1/jobs {
+    if ($connector_ip_allowed = 0) { return 403; }
+    limit_req zone=pg_connector burst=40 nodelay;
+    client_max_body_size 16m;            # POST jobs/{id}/result (paged results)
+    proxy_read_timeout 45s;
+    proxy_send_timeout 45s;
+    proxy_next_upstream error timeout;   # never replay a result POST on 502/503
+    proxy_pass http://patchgate_web;
+  }
+  # Package downloads: large, streamed, long-running. Connectors resume with Range.
+  location ^~ /api/connector/v1/packages/ {
+    if ($connector_ip_allowed = 0) { return 403; }
+    limit_req zone=pg_connector burst=20 nodelay;
+    proxy_buffering off;
+    proxy_max_temp_file_size 0;
+    proxy_read_timeout 600s;
+    send_timeout 600s;
+    proxy_pass http://patchgate_web;
+  }
+  # Staff (browser) administration of connectors — enrolment codes, revoke, limits. Session + CSRF + platform
+  # admin role are enforced by the app; this is NOT connector traffic, so the per-bank connector IP gate
+  # must not apply (longest ^~ prefix wins over /api/connector/).
+  location ^~ /api/connector/admin/ {
+    limit_req zone=pg_general burst=20 nodelay;
+    client_max_body_size 1m;
+    proxy_pass http://patchgate_web;
+  }
+  location ^~ /api/connector/ {
+    if ($connector_ip_allowed = 0) { return 403; }
+    limit_req zone=pg_connector burst=40 nodelay;
+    client_max_body_size 32m;            # POST inventory (paged), enrol, heartbeat
+    proxy_read_timeout 60s;
+    proxy_next_upstream error timeout;
+    proxy_pass http://patchgate_web;
+  }
+  # ---- one-line site install (installers/site/web-install.md): a NEW site VM fetches /install/site.sh and the
+  # site bundle (GET /install/bundle/<version>/<file>, `Authorization: PatchGate-Enrolment <code>` checked by
+  # the app; the full bundle is > 1 GB and resumed with Range). Machine traffic from the bank's connector
+  # egress ranges: same per-bank allow-list as the connector API. GET only, tiny request bodies, no buffering.
+  location ^~ /install/ {
+    if ($connector_ip_allowed = 0) { return 403; }
+    limit_req zone=pg_connector burst=20 nodelay;
+    limit_except GET { deny all; }       # GET implies HEAD
+    client_max_body_size 1k;
+    proxy_buffering off;
+    proxy_max_temp_file_size 0;
+    proxy_read_timeout 600s;
+    send_timeout 600s;
+    proxy_next_upstream error timeout;
+    proxy_pass http://patchgate_web;
+  }
+  location = /install { return 404; }
+
+  # WSUS connector scripts (Export-WsusCatalog / Sync-WsusApprovals) — LEGACY, blocked by default:
+  # 404 unless the source IP is in allowlists/wsus.conf (opt-in per legacy bank, change ticket). The app
+  # still requires the x-wsus-token. Hosted banks use the connector API instead.
+  location ^~ /api/wsus/ {
+    if ($wsus_ip_allowed = 0) { return 404; }
+    limit_req zone=pg_connector burst=10 nodelay;
+    client_max_body_size 64m;            # catalog export
+    proxy_read_timeout 120s;
+    proxy_send_timeout 120s;
+    proxy_next_upstream error timeout;
+    proxy_pass http://patchgate_web;
+  }
+
+  # ---- package repository (/repo) — NOT served in the hosted deployment: connectors download through the
+  # signed /api/connector/v1/packages endpoint (and the app sets REPO_PUBLIC=false). 404 unless the source
+  # IP is in allowlists/repo.conf (legacy direct-mode sites only; opt-in with a change ticket).
+  location ^~ /repo/ {
+    if ($repo_ip_allowed = 0) { return 404; }
+    limit_req zone=pg_general burst=50 nodelay;
+    proxy_buffering off;
+    proxy_max_temp_file_size 0;
+    proxy_read_timeout 600s;
+    send_timeout 600s;
+    proxy_pass http://patchgate_web;
+  }
+  location = /repo { return 404; }
+
+  # ---- immutable build assets
+  location ^~ /_next/static/ {
+    proxy_pass http://patchgate_web;
+  }
+
+  # ---- everything else: UI pages + API
+  location / {
+    limit_req zone=pg_general burst=60 nodelay;
+    client_max_body_size 2m;
+    proxy_pass http://patchgate_web;
+  }
+}

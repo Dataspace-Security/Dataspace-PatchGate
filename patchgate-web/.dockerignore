@@ -1,0 +1,39 @@
+# Keep the build context small and secret-free.
+.git
+.gitignore
+node_modules
+.next
+.next-e2e
+out
+build
+coverage
+*.tsbuildinfo
+next-env.d.ts
+
+# secrets / local config — NEVER in an image
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# local data, logs, test artefacts
+repo-data
+*.log
+e2e
+test-results
+playwright-report
+playwright.config.ts
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db

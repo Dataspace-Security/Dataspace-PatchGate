@@ -1,0 +1,21 @@
+# Local development database only. Production Postgres is provisioned by the bank.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: patchgate-dev-db
+    environment:
+      POSTGRES_USER: patchgate
+      POSTGRES_PASSWORD: patchgate-dev-only
+      POSTGRES_DB: patchgate
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - patchgate-dev-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U patchgate -d patchgate"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  patchgate-dev-db:

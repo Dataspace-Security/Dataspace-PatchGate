@@ -1,0 +1,28 @@
+# AUTH_ENC_KEY rotation override (docs/RUNBOOK.md §9.4) — use ONLY while a rotation is in progress.
+#
+#   sudo ./scripts/generate-secrets.sh --rotate auth_enc_key        # auth_enc_key -> auth_enc_key_previous + new key
+#   DC="docker compose -f docker-compose.prod.yml -f docker-compose.rotation.yml --env-file .env.production"
+#   $DC up -d                                                        # step 2: web-1/2 decrypt with both keys
+#   $DC run --rm migrate node node_modules/tsx/dist/cli.mjs scripts/admin/rotate-auth-enc-key.ts --dry-run   # step 3
+#   # step 4: drop this file from the command line, `$DC up -d` with only docker-compose.prod.yml,
+#   #         then delete secrets/auth_enc_key_previous (after the escrow holds the new key).
+#
+# Adds the decrypt-only previous key (AUTH_ENC_KEY_PREVIOUS_FILE -> AUTH_ENC_KEY_PREVIOUS via the image
+# entrypoint) to the containers that hold AUTH_ENC_KEY: web-1, web-2 and migrate. The fetcher never gets it
+# (it runs with a random AUTH_ENC_KEY placeholder). Without this file the stack needs no previous key.
+services:
+  web-1:
+    environment:
+      AUTH_ENC_KEY_PREVIOUS_FILE: /run/secrets/auth_enc_key_previous
+    secrets: [auth_enc_key_previous]
+  web-2:
+    environment:
+      AUTH_ENC_KEY_PREVIOUS_FILE: /run/secrets/auth_enc_key_previous
+    secrets: [auth_enc_key_previous]
+  migrate:
+    environment:
+      AUTH_ENC_KEY_PREVIOUS_FILE: /run/secrets/auth_enc_key_previous
+    secrets: [auth_enc_key_previous]
+
+secrets:
+  auth_enc_key_previous: { file: ./secrets/auth_enc_key_previous }

@@ -1,0 +1,40 @@
+{
+  "Notepad++.Notepad++": {
+    "latest": {
+      "version": "8.9.8.1",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.8.1/npp.8.9.8.1.Installer.x64.msi",
+      "manifestSha256": "0c4f4fe82babd7688f5c1431b1357392491563af6ffedf4e37f5de0bd71babb4",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Notepad++.Notepad++-8.9.8.1.msi",
+      "downloadSha256": "0c4f4fe82babd7688f5c1431b1357392491563af6ffedf4e37f5de0bd71babb4",
+      "hashMatches": true,
+      "sizeMB": 7.8,
+      "hosts": [
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "Valid",
+      "org": "NOTEPAD++"
+    },
+    "older": {
+      "version": "8.9.6.4",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.6.4/npp.8.9.6.4.Installer.x64.msi",
+      "manifestSha256": "caf99c55acf3b9dc40bd0b1c414a2df3addd580e2c0184da9a1f8a3c4bec3f7a",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Notepad++.Notepad++-8.9.6.4.msi",
+      "downloadSha256": "caf99c55acf3b9dc40bd0b1c414a2df3addd580e2c0184da9a1f8a3c4bec3f7a",
+      "hashMatches": true,
+      "sizeMB": 7.7,
+      "hosts": [
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "Valid",
+      "org": "NOTEPAD++"
+    }
+  }
+}

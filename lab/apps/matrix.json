@@ -1,0 +1,378 @@
+{
+  "Microsoft.PowerShell": {
+    "latest": {
+      "version": "7.6.7.0",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.7/PowerShell-7.6.7-win-x64.msi",
+      "manifestSha256": "ec575cef9ec56fcd905de0d5eeac9cb7f81a0a65abb87bb5cd0e87fdfe2b8cc0",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Microsoft.PowerShell-7.6.7.0.msi",
+      "downloadSha256": "ec575cef9ec56fcd905de0d5eeac9cb7f81a0a65abb87bb5cd0e87fdfe2b8cc0",
+      "hashMatches": true,
+      "sizeMB": 117.5,
+      "hosts": [
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "Valid",
+      "org": "Microsoft Corporation"
+    },
+    "older": {
+      "version": "7.6.4.0",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.4/PowerShell-7.6.4-win-x64.msi",
+      "manifestSha256": "d11942df52fd12470169797abfa4781d9480efdc81000ba4fa55a5b921ed8dd0",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Microsoft.PowerShell-7.6.4.0.msi",
+      "downloadSha256": "d11942df52fd12470169797abfa4781d9480efdc81000ba4fa55a5b921ed8dd0",
+      "hashMatches": true,
+      "sizeMB": 115.5,
+      "hosts": [
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "Valid",
+      "org": "Microsoft Corporation"
+    }
+  },
+  "Git.Git": {
+    "latest": {
+      "version": "2.55.0.5",
+      "kind": "exe",
+      "installerType": "inno",
+      "switches": "/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS",
+      "url": "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/Git-2.55.0.5-64-bit.exe",
+      "manifestSha256": "d065a4e23c3d9a6b5073d609b5be0830227ec3ca053c083ba385061ddfaf94c6",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Git.Git-2.55.0.5.exe",
+      "downloadSha256": "d065a4e23c3d9a6b5073d609b5be0830227ec3ca053c083ba385061ddfaf94c6",
+      "hashMatches": true,
+      "sizeMB": 65.3,
+      "hosts": [
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "Valid",
+      "org": "Johannes Schindelin"
+    },
+    "older": {
+      "version": "2.55.0.2",
+      "kind": "exe",
+      "installerType": "inno",
+      "switches": "/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS",
+      "url": "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.2/Git-2.55.0.2-64-bit.exe",
+      "manifestSha256": "74300da8dfe0d844c5449ffb809662f8eeac47916f83730c879c4084890c6c0e",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Git.Git-2.55.0.2.exe",
+      "downloadSha256": "74300da8dfe0d844c5449ffb809662f8eeac47916f83730c879c4084890c6c0e",
+      "hashMatches": true,
+      "sizeMB": 65.4,
+      "hosts": [
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "Valid",
+      "org": "Johannes Schindelin"
+    }
+  },
+  "7zip.7zip": {
+    "latest": {
+      "version": "26.04",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://www.7-zip.org/a/7z2604-x64.msi",
+      "manifestSha256": "0b01334a418654293513449f61d6bfc99e5196ca371e3c3dc961eda57cd535c6",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\7zip.7zip-26.04.msi",
+      "downloadSha256": "0b01334a418654293513449f61d6bfc99e5196ca371e3c3dc961eda57cd535c6",
+      "hashMatches": true,
+      "sizeMB": 2,
+      "hosts": [
+        "www.7-zip.org",
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "NotSigned",
+      "org": null
+    },
+    "older": {
+      "version": "26.01",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://7-zip.org/a/7z2601-x64.msi",
+      "manifestSha256": "a47ea8dcf8bc08e6de474cae77c828e031fa22cb528f6095defffebf11cd02f2",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\7zip.7zip-26.01.msi",
+      "downloadSha256": "a47ea8dcf8bc08e6de474cae77c828e031fa22cb528f6095defffebf11cd02f2",
+      "hashMatches": true,
+      "sizeMB": 2,
+      "hosts": [
+        "7-zip.org",
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "NotSigned",
+      "org": null
+    }
+  },
+  "VideoLAN.VLC": {
+    "latest": {
+      "version": "3.0.24",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://download.videolan.org/pub/videolan/vlc/3.0.24/win64/vlc-3.0.24-win64.msi",
+      "manifestSha256": "22172095ce4c2d5f5b600bb4c142d78105db29a77fa59a931941876f3b20f6d0",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\VideoLAN.VLC-3.0.24.msi",
+      "downloadSha256": "22172095ce4c2d5f5b600bb4c142d78105db29a77fa59a931941876f3b20f6d0",
+      "hashMatches": true,
+      "sizeMB": 63.4,
+      "hosts": [
+        "download.videolan.org",
+        "get.videolan.org",
+        "mirror.del.albony.in"
+      ],
+      "signature": "Valid",
+      "org": "VideoLAN"
+    },
+    "older": {
+      "version": "3.0.21",
+      "kind": "exe",
+      "installerType": "nullsoft",
+      "switches": "/S",
+      "url": "https://download.videolan.org/videolan/vlc/3.0.21/win64/vlc-3.0.21-win64.exe",
+      "manifestSha256": "9742689a50e96ddc04d80ceff046b28da2beefd617be18166f8c5e715ec60c59",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\VideoLAN.VLC-3.0.21.exe",
+      "downloadSha256": "9742689a50e96ddc04d80ceff046b28da2beefd617be18166f8c5e715ec60c59",
+      "hashMatches": true,
+      "sizeMB": 44.9,
+      "hosts": [
+        "download.videolan.org",
+        "get.videolan.org",
+        "mirror.bom2.albony.in"
+      ],
+      "signature": "Valid",
+      "org": "VideoLAN"
+    }
+  },
+  "EclipseAdoptium.Temurin.21.JRE": {
+    "latest": {
+      "version": "21.0.12.101",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1+1/OpenJDK21U-jre_x64_windows_hotspot_21.0.12.1_1.msi",
+      "manifestSha256": "536eeb1dc3f743e5932a92e3549430fc75392c5d379101c1456a1c201aa6e66b",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\EclipseAdoptium.Temurin.21.JRE-21.0.12.101.msi",
+      "downloadSha256": "536eeb1dc3f743e5932a92e3549430fc75392c5d379101c1456a1c201aa6e66b",
+      "hashMatches": true,
+      "sizeMB": 35,
+      "hosts": [
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "Valid",
+      "org": "Eclipse Foundation"
+    },
+    "older": {
+      "version": "21.0.10.7",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.10+7/OpenJDK21U-jre_x64_windows_hotspot_21.0.10_7.msi",
+      "manifestSha256": "a841118d4959b6b6eb6156fa1f2487f112afaecd124b1eb5bba203d5556efd32",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\EclipseAdoptium.Temurin.21.JRE-21.0.10.7.msi",
+      "downloadSha256": "a841118d4959b6b6eb6156fa1f2487f112afaecd124b1eb5bba203d5556efd32",
+      "hashMatches": true,
+      "sizeMB": 34.9,
+      "hosts": [
+        "github.com",
+        "release-assets.githubusercontent.com"
+      ],
+      "signature": "Valid",
+      "org": "Eclipse.org Foundation, Inc."
+    }
+  },
+  "Zoom.Zoom": {
+    "latest": {
+      "version": "7.2.48556",
+      "kind": "msi",
+      "installerType": "msi",
+      "switches": "",
+      "url": "https://zoom.us/client/7.2.1.48556/ZoomInstallerFull.msi?archType=x64",
+      "manifestSha256": "b0dac9fa5237d2e18144ca723644460e7cc26675e5d3db0f89fdfe47ad8c429b",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Zoom.Zoom-7.2.48556.msi",
+      "downloadSha256": "b0dac9fa5237d2e18144ca723644460e7cc26675e5d3db0f89fdfe47ad8c429b",
+      "hashMatches": true,
+      "sizeMB": 220.3,
+      "hosts": [
+        "zoom.us",
+        "cdn.zoom.us"
+      ],
+      "signature": "Valid",
+      "org": "Zoom Communications, Inc."
+    },
+    "older": {
+      "version": "7.1.43453",
+      "kind": "msi",
+      "installerType": "msi",
+      "switches": "",
+      "url": "https://zoom.us/client/7.1.5.43453/ZoomInstallerFull.msi?archType=x64",
+      "manifestSha256": "5c45549aa924ee807215465aec6ca8f743520e2cd0b6ff8698b4a023e5b22204",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Zoom.Zoom-7.1.43453.msi",
+      "downloadSha256": "5c45549aa924ee807215465aec6ca8f743520e2cd0b6ff8698b4a023e5b22204",
+      "hashMatches": true,
+      "sizeMB": 212,
+      "hosts": [
+        "zoom.us",
+        "cdn.zoom.us"
+      ],
+      "signature": "Valid",
+      "org": "Zoom Communications, Inc."
+    }
+  },
+  "PuTTY.PuTTY": {
+    "latest": {
+      "version": "0.85.0.0",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://the.earth.li/~sgtatham/putty/0.85/w64/putty-64bit-0.85-installer.msi",
+      "manifestSha256": "2213ebacf962b709411d654a40087508a694756bc4e41c5a1c24ad86596b2511",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\PuTTY.PuTTY-0.85.0.0.msi",
+      "downloadSha256": "2213ebacf962b709411d654a40087508a694756bc4e41c5a1c24ad86596b2511",
+      "hashMatches": true,
+      "sizeMB": 3.8,
+      "hosts": [
+        "the.earth.li"
+      ],
+      "signature": "Valid",
+      "org": "Simon Tatham"
+    },
+    "older": {
+      "version": "0.82.0.0",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://the.earth.li/~sgtatham/putty/0.82/w64/putty-64bit-0.82-installer.msi",
+      "manifestSha256": "a333ee14b4008b5b1136ae254a9c1c4a082befb248a294d0572af0cc8765d916",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\PuTTY.PuTTY-0.82.0.0.msi",
+      "downloadSha256": "a333ee14b4008b5b1136ae254a9c1c4a082befb248a294d0572af0cc8765d916",
+      "hashMatches": true,
+      "sizeMB": 3.8,
+      "hosts": [
+        "the.earth.li"
+      ],
+      "signature": "Valid",
+      "org": "Simon Tatham"
+    }
+  },
+  "WiresharkFoundation.Wireshark": {
+    "latest": {
+      "version": "4.6.9",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://2.na.dl.wireshark.org/win64/all-versions/Wireshark-4.6.9-x64.msi",
+      "manifestSha256": "1975dfc96581a9b674fda3f41ac1585963b4ba52ea9459f3b6d9cedfac3a7217",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\WiresharkFoundation.Wireshark-4.6.9.msi",
+      "downloadSha256": "1975dfc96581a9b674fda3f41ac1585963b4ba52ea9459f3b6d9cedfac3a7217",
+      "hashMatches": true,
+      "sizeMB": 80.4,
+      "hosts": [
+        "2.na.dl.wireshark.org"
+      ],
+      "signature": "Valid",
+      "org": "Wireshark Foundation"
+    },
+    "older": {
+      "version": "4.6.6",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://2.na.dl.wireshark.org/win64/all-versions/Wireshark-4.6.6-x64.msi",
+      "manifestSha256": "90104f6eae9b1fb4b1c8ebf6313d73e42f34ee274d3bc26bdc86741d47466c9d",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\WiresharkFoundation.Wireshark-4.6.6.msi",
+      "downloadSha256": "90104f6eae9b1fb4b1c8ebf6313d73e42f34ee274d3bc26bdc86741d47466c9d",
+      "hashMatches": true,
+      "sizeMB": 79.9,
+      "hosts": [
+        "2.na.dl.wireshark.org"
+      ],
+      "signature": "Valid",
+      "org": "Wireshark Foundation"
+    }
+  },
+  "Mozilla.Firefox": {
+    "latest": {
+      "version": "157.0.1",
+      "kind": "exe",
+      "installerType": "nullsoft",
+      "switches": "/S",
+      "url": "https://download-installer.cdn.mozilla.net/pub/firefox/releases/157.0.1/win64/en-US/Firefox%20Setup%20157.0.1.exe",
+      "manifestSha256": "71dc620e7749bb65be6df67b99261a303805a804f9c787b76b81c095cfa7d9ca",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Mozilla.Firefox-157.0.1.exe",
+      "downloadSha256": "71dc620e7749bb65be6df67b99261a303805a804f9c787b76b81c095cfa7d9ca",
+      "hashMatches": true,
+      "sizeMB": 93.4,
+      "hosts": [
+        "download-installer.cdn.mozilla.net"
+      ],
+      "signature": "Valid",
+      "org": "Mozilla Corporation"
+    },
+    "older": {
+      "version": "156.0",
+      "kind": "exe",
+      "installerType": "nullsoft",
+      "switches": "/S",
+      "url": "https://download-installer.cdn.mozilla.net/pub/firefox/releases/156.0/win64/en-US/Firefox%20Setup%20156.0.exe",
+      "manifestSha256": "86a027237f7408e8a4d18637c57d487455a704cbb2466a32d0d14c2207d2699a",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Mozilla.Firefox-156.0.exe",
+      "downloadSha256": "86a027237f7408e8a4d18637c57d487455a704cbb2466a32d0d14c2207d2699a",
+      "hashMatches": true,
+      "sizeMB": 92.8,
+      "hosts": [
+        "download-installer.cdn.mozilla.net"
+      ],
+      "signature": "Valid",
+      "org": "Mozilla Corporation"
+    }
+  },
+  "Google.Chrome": {
+    "latest": {
+      "version": "155.0.8059.40",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi",
+      "manifestSha256": "32ba438dea18f0fed1ec621bfb274a2669adec67be2aa91d96b3cc6c64779276",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Google.Chrome-155.0.8059.40.msi",
+      "downloadSha256": "2734dc5577dcbab49be037e5a074aef9948faca14453b52defb01224c196a3f5",
+      "hashMatches": false,
+      "sizeMB": 169.8,
+      "hosts": [
+        "dl.google.com"
+      ],
+      "signature": "Valid",
+      "org": "Google LLC"
+    },
+    "older": {
+      "version": "155.0.8059.40",
+      "kind": "msi",
+      "installerType": "wix",
+      "switches": "",
+      "url": "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi",
+      "manifestSha256": "32ba438dea18f0fed1ec621bfb274a2669adec67be2aa91d96b3cc6c64779276",
+      "file": "D:\\Projects\\Dataspace_Security\\Dataspace-PatchGate\\lab\\apps\\cache\\Google.Chrome-155.0.8059.40.msi",
+      "downloadSha256": "2734dc5577dcbab49be037e5a074aef9948faca14453b52defb01224c196a3f5",
+      "hashMatches": false,
+      "sizeMB": 169.8,
+      "hosts": [
+        "dl.google.com"
+      ],
+      "signature": "Valid",
+      "org": "Google LLC"
+    }
+  }
+}

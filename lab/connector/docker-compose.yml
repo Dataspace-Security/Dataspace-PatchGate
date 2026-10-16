@@ -1,0 +1,78 @@
+# PatchGate lab — "Bank A, Head office site": the PatchGate Connector next to the lab Tactical RMM.
+#
+#   PatchGate (this PC, :3443) ◄── bank-a-firewall (socat, ONLY :3443 PatchGate + :6514 bank SIEM) ◄── connector
+#                                                                                                      │  ▲
+#                                     Tactical nginx (api.<domain>:4443, bank LAN = trmm proxy net) ◄──┘  │
+#   bank PCs (Windows Sandbox) ── trmm-lab-ingress :8443 ──────────────────────────────── package cache ─┘
+#
+# Networks:
+#  - patchgate-lab-trmm_proxy (external, `internal: true`, created by lab/tactical/up.sh) = the bank LAN.
+#  - bank-a-egress (`internal: true`): only the connector and the bank firewall. No route anywhere else.
+#  - bank-a-wan (bridge): only the bank firewall, which forwards exactly two ports to the lab host.
+# The connector itself is on internal networks only: it has no outbound route except the firewall's two
+# forwarded ports (lab/connector/up.sh proves it). Tactical containers are NOT on bank-a-egress.
+name: patchgate-lab-bank-a
+
+networks:
+  bank-lan:
+    external: true
+    name: patchgate-lab-trmm_proxy
+  bank-a-egress:
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.231.51.0/24
+  bank-a-wan:
+    driver: bridge
+
+volumes:
+  bank-a-state: {} # connector key (0600), journal, cache index, cached packages
+
+services:
+  bank-a-firewall:
+    container_name: bank-a-firewall
+    image: alpine/socat:latest
+    restart: always
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        socat TCP-LISTEN:3443,fork,reuseaddr TCP:host.docker.internal:3443 &
+        socat TCP-LISTEN:6514,fork,reuseaddr TCP:host.docker.internal:6514 &
+        wait
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      bank-a-egress:
+        ipv4_address: 10.231.51.10
+      bank-a-wan: {}
+
+  connector:
+    container_name: bank-a-connector
+    image: patchgate-connector:1.0.0
+    restart: unless-stopped
+    command: ["run"]
+    read_only: true
+    user: "1000:1000"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    volumes:
+      # connector.json, tactical-api-key, bank CA, cache TLS cert/key. Read-only except for `init` (PGC_ETC_MODE=rw).
+      - ./bank-a/etc:/etc/patchgate-connector:${PGC_ETC_MODE:-ro}
+      - bank-a-state:/var/lib/patchgate-connector
+    extra_hosts:
+      - "patchgate.patchgate-lab.internal:10.231.51.10" # our server, via the bank firewall
+      - "siem.patchgate-lab.internal:10.231.51.10" # bank SIEM (lab: receiver on the host), via the firewall
+      - "api.patchgate-lab.internal:10.231.50.20" # local Tactical nginx on the bank LAN
+    networks:
+      bank-lan:
+        ipv4_address: 10.231.50.40
+      bank-a-egress:
+        ipv4_address: 10.231.51.20
+    stop_grace_period: 90s
+    mem_limit: 512m
+    cpus: 2
+    depends_on:
+      - bank-a-firewall

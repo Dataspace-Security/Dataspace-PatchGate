@@ -1,0 +1,625 @@
+# PatchGate — production stack (single host, Docker Engine + Compose v2).
+#
+#   cd deploy
+#   sudo ./scripts/generate-secrets.sh                      # once: ./secrets/* (0600) + secrets/job-signing-keys/
+#   cp .env.production.example .env.production && $EDITOR .env.production
+#   docker compose -f docker-compose.prod.yml --env-file .env.production build signer egress-proxy backup
+#   docker compose -f docker-compose.prod.yml --env-file .env.production run --rm migrate
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+#   ./scripts/smoke-test.sh https://patchgate.example.com
+#
+# Topology (see docs/RUNBOOK.md §2):
+#   internet ─443─► nginx ─(app)─► web-1, web-2 ─(data)─► db  [─► db-replica, profile "replica"]
+#                   web-1/2 ─(signer, internal)─► signer      ONLY holder of the job-signing keys (per bank)
+#                   web-1/2 ─(siem-out)─► platform SIEM        host firewall: SIEM (+ IdP) only
+#   scheduler ─(app)─► web-*/api/worker/tick (1 min)  ·  ─(fetch-ctl)─► fetcher/api/worker/fetch (1 h)
+#   fetcher ─(fetch-egress)─► egress-proxy (squid: vendor allow-list, private IPs denied) ─► vendors
+#   backup ─(db-admin)─► db      the only network the postgres superuser may log in from (pg_hba)
+# Only egress-proxy may reach the internet; enforce with the host firewall (RUNBOOK §4.3, DOCKER-USER).
+#
+# Secrets per container (least privilege; RUNBOOK §4.2, SECURITY.md §5):
+#   web-1/2  db_app_password audit_hmac_key worker_token wsus_token auth_enc_key tactical_api_key job_signer_token metrics_token pg_ca_cert
+#            (+ read-only volume site-bundles at /data/site-bundles: one-line site install, RUNBOOK §6)
+#   fetcher  db_app_password audit_hmac_key worker_token pg_ca_cert  (JOB_SIGNER=disabled; AUTH_ENC_KEY/TACTICAL_API_KEY = random placeholders)
+#   signer   job_signer_token + ./secrets/job-signing-keys/{default,<tenantId>}.pem   (uid 10002)
+#   migrate  db_owner_password audit_hmac_key auth_enc_key pg_ca_cert  (JOB_SIGNER=disabled)
+#   db       postgres_superuser_password db_owner_password db_app_password replication_password pg_tls_key pg_tls_cert
+#   db-replica replication_password pg_tls_key pg_tls_cert pg_ca_cert
+#   backup   postgres_superuser_password pg_ca_cert
+# pg_ca_cert (public) is the internal DB CA every DB client verifies the server against; its private key
+# (secrets/pg_ca_key) is never mounted into any container (generate-secrets.sh, RUNBOOK §4.2).
+# AUTH_ENC_KEY rotation only: add -f docker-compose.rotation.yml (auth_enc_key_previous for web-1/2 + migrate,
+# RUNBOOK §9.4). Without it the stack runs with no previous key.
+
+name: patchgate
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "50m", max-file: "10" }
+
+# Environment shared by every container running the PatchGate image. Secrets are NOT shared: each
+# service lists exactly the *_FILE variables and secrets it needs.
+x-app-env: &app-env
+  NODE_ENV: production
+  DB_HOST: db
+  DB_PORT: "5432"
+  DB_NAME: ${POSTGRES_DB:-patchgate}
+  DB_USER: ${DB_APP_USER:-patchgate_app}
+  DB_PASSWORD_FILE: /run/secrets/db_app_password
+  # The DB accepts only TLS on the network (postgres/db-entrypoint.sh → hostssl), and Prisma VERIFIES the
+  # server: sslaccept=strict checks the chain against sslcert (= the CA file, Prisma's naming) AND the
+  # hostname "db". Do NOT use sslmode=verify-full here: Prisma 6 accepts it silently but does not verify.
+  DB_URL_PARAMS: ${DB_URL_PARAMS:-connection_limit=10&pool_timeout=20&sslmode=require&sslaccept=strict&sslcert=/run/secrets/pg_ca_cert}
+  REPO_DIR: /data/repo
+  TRUST_PROXY_HOPS: "1"
+
+x-app: &app
+  <<: *hardening
+  image: ${PATCHGATE_IMAGE:?set PATCHGATE_IMAGE (e.g. registry.example.com/patchgate-web:1.0.0)}
+  env_file:
+    - path: ./.env.production
+      required: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+    - /app/.next/cache:size=512m,uid=10001,gid=10001,mode=0700
+  volumes:
+    - repo:/data/repo
+    - ./ca:/etc/patchgate/ca:ro          # SIEM CA, internal CAs (NODE_EXTRA_CA_CERTS), CODESIGN_CA_FILE
+  stop_grace_period: 30s
+  depends_on:
+    db:
+      condition: service_healthy
+
+x-web: &web
+  <<: *app
+  environment:
+    <<: *app-env
+    AUDIT_HMAC_KEY_FILE: /run/secrets/audit_hmac_key
+    WORKER_TOKEN_FILE: /run/secrets/worker_token
+    WSUS_TOKEN_FILE: /run/secrets/wsus_token
+    AUTH_ENC_KEY_FILE: /run/secrets/auth_enc_key
+    TACTICAL_API_KEY_FILE: /run/secrets/tactical_api_key
+    # Jobs are signed by the signer service (per-bank keys); the web tier holds a token, never a private key.
+    JOB_SIGNER: remote
+    JOB_SIGNER_URL: http://signer:8080
+    JOB_SIGNER_TOKEN_FILE: /run/secrets/job_signer_token
+    # Bearer token Prometheus sends to /api/metrics (same secret file as the scrape's credentials_file).
+    METRICS_TOKEN_FILE: /run/secrets/metrics_token
+    # One-line site install: bundles uploaded to the site-bundles volume (RUNBOOK §6, installers/site/web-install.md).
+    PATCHGATE_SITE_BUNDLE_DIR: /data/site-bundles
+  volumes:
+    - repo:/data/repo
+    - ./ca:/etc/patchgate/ca:ro
+    - site-bundles:/data/site-bundles:ro
+  secrets:
+    - db_app_password
+    - audit_hmac_key
+    - worker_token
+    - wsus_token
+    - auth_enc_key
+    - tactical_api_key
+    - job_signer_token
+    - metrics_token
+    - pg_ca_cert
+  networks: [app, data, siem-out, signer]
+  depends_on:
+    db: { condition: service_healthy }
+    signer: { condition: service_healthy }
+  deploy:
+    resources:
+      limits: { cpus: "${WEB_CPUS:-2}", memory: "${WEB_MEMORY:-2g}" }
+      reservations: { memory: 512m }
+
+services:
+  # ------------------------------------------------------------------ edge
+  nginx:
+    <<: *hardening
+    image: ${NGINX_IMAGE:-nginx:1.28-alpine}
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=256m
+      - /var/run:size=1m
+      - /tmp:size=64m
+      - /etc/nginx/conf.d:size=1m          # rendered from ./nginx/templates at start (envsubst)
+    environment:
+      PATCHGATE_HOSTNAME: ${PATCHGATE_HOSTNAME:?set PATCHGATE_HOSTNAME (public DNS name)}
+      NGINX_ENVSUBST_TEMPLATE_SUFFIX: .template
+    ports:
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${HTTPS_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/allowlists:/etc/nginx/allowlists:ro
+      - ./tls:/etc/nginx/tls:ro
+    networks: [edge, app]
+    depends_on:
+      web-1: { condition: service_healthy }
+      web-2: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/nginx-health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 256m }
+
+  # ------------------------------------------------------------------ app (stateless, no internet)
+  web-1:
+    <<: *web
+    hostname: web-1
+  web-2:
+    <<: *web
+    hostname: web-2
+
+  # Same image; receives ONLY /api/worker/fetch from the scheduler (network fetch-ctl). Not in the nginx
+  # pool and not reachable from web-1/web-2. The only PatchGate container with (proxied, allow-listed)
+  # internet egress — it parses untrusted content, so it gets no job-signing key or signer token
+  # (JOB_SIGNER=disabled), no AUTH_ENC_KEY / Tactical key (random per-start placeholders, see the image
+  # entrypoint), no SIEM network. It keeps AUDIT_HMAC_KEY because it appends audit events (downloads,
+  # trust decisions, mirror updates) — SECURITY.md §5.
+  fetcher:
+    <<: *app
+    hostname: fetcher
+    environment:
+      <<: *app-env
+      AUDIT_HMAC_KEY_FILE: /run/secrets/audit_hmac_key
+      WORKER_TOKEN_FILE: /run/secrets/worker_token
+      PATCHGATE_EPHEMERAL_SECRETS: AUTH_ENC_KEY TACTICAL_API_KEY
+      JOB_SIGNER: disabled
+      HTTPS_PROXY: http://egress-proxy:3128
+      HTTP_PROXY: http://egress-proxy:3128
+      NO_PROXY: localhost,127.0.0.1,db,fetcher
+      NODE_USE_ENV_PROXY: "1"
+    secrets:
+      - db_app_password
+      - audit_hmac_key
+      - worker_token
+      - pg_ca_cert
+    networks: [fetch-ctl, data, fetch-egress]
+    depends_on:
+      db: { condition: service_healthy }
+      egress-proxy: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "${FETCHER_CPUS:-2}", memory: "${FETCHER_MEMORY:-3g}" }
+
+  # ------------------------------------------------------------------ job signer (private keys, per bank)
+  # Internal network "signer" only (reachable from web-1/web-2); no DB, no internet, no other secrets.
+  # Validates, rate-limits and audit-logs every signature (JSON lines: container log + signer-audit volume).
+  # Keys: ./secrets/job-signing-keys/{default,<tenantId>}.pem (0600, uid 10002). Reload: `kill -HUP`.
+  signer:
+    <<: *hardening
+    build:
+      context: ./signer
+      target: runtime
+    image: ${SIGNER_IMAGE:-patchgate-signer:local}
+    read_only: true
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    environment:
+      SIGNER_PORT: "8080"
+      SIGNER_KEY_DIR: /run/job-keys
+      SIGNER_TOKEN_FILE: /run/secrets/job_signer_token
+      SIGNER_AUDIT_FILE: /var/log/signer/audit.jsonl
+      SIGNER_RATE_PER_TENANT_PER_MIN: ${SIGNER_RATE_PER_TENANT_PER_MIN:-600}
+      SIGNER_RATE_PER_MIN: ${SIGNER_RATE_PER_MIN:-3000}
+      SIGNER_MAX_SCHEDULE_DAYS: ${SIGNER_MAX_SCHEDULE_DAYS:-90}
+      SIGNER_REQUIRE_TENANT_KEY: ${SIGNER_REQUIRE_TENANT_KEY:-false}
+    secrets: [job_signer_token]
+    volumes:
+      - ./secrets/job-signing-keys:/run/job-keys:ro
+      - signer-audit:/var/log/signer
+    networks: [signer]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 128m }
+
+  egress-proxy:
+    <<: *hardening
+    build:
+      context: ./egress-proxy
+    image: ${EGRESS_PROXY_IMAGE:-patchgate-egress-proxy:local}
+    read_only: true                    # runs as user squid, no capabilities
+    tmpfs:
+      - /var/cache/squid:size=16m
+      - /var/run/squid:size=1m
+      - /var/log/squid:size=16m
+      - /tmp:size=16m
+    volumes:
+      - ./egress-proxy/squid.conf:/etc/squid/squid.conf:ro
+      - ./egress-proxy/allowed-hosts.txt:/etc/squid/allowed-hosts.txt:ro
+    networks:
+      fetch-egress:
+        ipv4_address: ${EGRESS_PROXY_IP:-172.30.20.10}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 3128"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 256m }
+
+  # ------------------------------------------------------------------ scheduler (tick 1 min, fetch 1 h)
+  scheduler:
+    <<: *hardening
+    image: ${SCHEDULER_IMAGE:-curlimages/curl:8.11.1}
+    user: "10001:10001"
+    read_only: true
+    tmpfs: ["/tmp:size=8m,uid=10001,gid=10001,mode=0700"]
+    entrypoint: ["/bin/sh", "/opt/scheduler/scheduler.sh"]
+    environment:
+      TICK_TARGETS: http://web-1:3000 http://web-2:3000
+      FETCH_TARGET: http://fetcher:3000
+      TICK_INTERVAL_SECONDS: "60"
+      FETCH_INTERVAL_SECONDS: "3600"
+      FETCH_MAX_SECONDS: "7200"
+      WORKER_TOKEN_FILE: /run/secrets/worker_token
+    secrets: [worker_token]
+    volumes:
+      - ./scheduler/scheduler.sh:/opt/scheduler/scheduler.sh:ro
+    networks: [app, fetch-ctl]
+    depends_on:
+      web-1: { condition: service_healthy }
+      fetcher: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 64m }
+
+  # ------------------------------------------------------------------ database
+  db:
+    <<: *hardening
+    image: ${POSTGRES_IMAGE:-postgres:16-bookworm}
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    # Generates pg_hba (superuser only from db-admin, TLS-only network access) on every start.
+    entrypoint: ["/bin/bash", "/opt/patchgate/db-entrypoint.sh"]
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-1GB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-3GB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-16MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-256MB}
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-200}
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=5
+      - -c
+      - max_replication_slots=5
+      - -c
+      - wal_keep_size=2GB
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+      - -c
+      - log_lock_waits=on
+      - -c
+      - idle_in_transaction_session_timeout=300000
+      - -c
+      - statement_timeout=0
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+      POSTGRES_DB: ${POSTGRES_DB:-patchgate}
+      POSTGRES_INITDB_ARGS: --data-checksums --auth-host=scram-sha-256 --auth-local=peer
+      PATCHGATE_DB_OWNER: ${DB_OWNER_USER:-patchgate_owner}
+      PATCHGATE_DB_APP: ${DB_APP_USER:-patchgate_app}
+      DB_ADMIN_SUBNET: ${DB_ADMIN_SUBNET:-172.30.30.0/24}
+    secrets:
+      - postgres_superuser_password
+      - db_owner_password
+      - db_app_password
+      - replication_password
+      - pg_tls_key
+      - pg_tls_cert
+    shm_size: 256m
+    tmpfs:
+      - /run/pg-secrets:size=1m,mode=0700
+      - /var/run/postgresql:size=1m
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/db-entrypoint.sh:/opt/patchgate/db-entrypoint.sh:ro
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+    networks: [data, db-admin]
+    healthcheck:
+      # As the postgres OS user over the socket (peer auth): no FATAL auth noise in the DB log.
+      test: ["CMD-SHELL", "gosu postgres pg_isready -q -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits: { cpus: "${DB_CPUS:-4}", memory: "${DB_MEMORY:-6g}" }
+
+  db-replica:
+    <<: *hardening
+    profiles: [replica]
+    image: ${POSTGRES_IMAGE:-postgres:16-bookworm}
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    entrypoint: ["/bin/bash", "/opt/patchgate/replica-entrypoint.sh"]
+    environment:
+      PRIMARY_HOST: db
+      REPLICA_SLOT: ${REPLICA_SLOT:-patchgate_replica_1}
+      # Streams only from a primary holding a certificate for "db" signed by the internal DB CA.
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /run/secrets/pg_ca_cert
+    # pg_tls_*: serves TLS with the same certificate (SAN db-replica) so clients can verify after a promotion.
+    secrets: [replication_password, pg_tls_key, pg_tls_cert, pg_ca_cert]
+    shm_size: 256m
+    tmpfs:
+      - /run/pg-secrets:size=1m,mode=0700
+      - /var/run/postgresql:size=1m
+    volumes:
+      - pgdata-replica:/var/lib/postgresql/data
+      - ./postgres/replica-entrypoint.sh:/opt/patchgate/replica-entrypoint.sh:ro
+    networks: [data]
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "gosu postgres pg_isready -q"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits: { cpus: "${DB_CPUS:-4}", memory: "${DB_MEMORY:-6g}" }
+
+  # ------------------------------------------------------------------ backups (nightly, age-encrypted)
+  backup:
+    <<: *hardening
+    build:
+      context: ./backup
+      args:
+        DEBIAN_IMAGE: ${BACKUP_BASE_IMAGE:-debian:trixie-slim}
+    image: ${BACKUP_IMAGE:-patchgate-backup:local}
+    cap_add: [DAC_READ_SEARCH]       # read 0600 secrets + the repo volume (owned by uid 10001)
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    command: ["schedule"]
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGDATABASE: ${POSTGRES_DB:-patchgate}
+      PGPASSWORD_FILE: /run/secrets/postgres_superuser_password
+      PGSSLMODE: verify-full                   # chain (internal DB CA) + hostname "db"
+      PGSSLROOTCERT: /run/secrets/pg_ca_cert
+      BACKUP_AGE_RECIPIENTS: ${BACKUP_AGE_RECIPIENTS:?set BACKUP_AGE_RECIPIENTS (age public key(s); private key kept OFFLINE)}
+      BACKUP_HOUR_UTC: ${BACKUP_HOUR_UTC:-1}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-35}
+      BACKUP_REPO: ${BACKUP_REPO:-weekly}
+      BACKUP_REPO_RETENTION_WEEKS: ${BACKUP_REPO_RETENTION_WEEKS:-4}
+    secrets: [postgres_superuser_password, pg_ca_cert]
+    configs:
+      - source: secrets_fingerprints
+        target: /etc/patchgate/secrets.sha256
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups
+      - repo:/data/repo:ro
+    networks: [db-admin]
+    depends_on:
+      db: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512m }
+
+  # ------------------------------------------------------------------ one-shot jobs (never on web start)
+  #   docker compose ... run --rm migrate
+  #   docker compose ... run --rm -it migrate node node_modules/tsx/dist/cli.mjs scripts/admin/create-user.ts \
+  #       --upn admin@patchgate.example --name "First Admin" --role ADMIN --generate          (TO VERIFY, RUNBOOK §5)
+  migrate:
+    <<: *app
+    profiles: [ops]
+    image: ${PATCHGATE_TOOLS_IMAGE:?set PATCHGATE_TOOLS_IMAGE (patchgate-tools:<same version as web>)}
+    restart: "no"
+    environment:
+      <<: *app-env
+      DB_USER: ${DB_OWNER_USER:-patchgate_owner}
+      DB_PASSWORD_FILE: /run/secrets/db_owner_password
+      AUDIT_HMAC_KEY_FILE: /run/secrets/audit_hmac_key     # admin CLI writes audit events
+      AUTH_ENC_KEY_FILE: /run/secrets/auth_enc_key         # admin CLI (user bootstrap / MFA reset)
+      PATCHGATE_EPHEMERAL_SECRETS: TACTICAL_API_KEY WORKER_TOKEN
+      JOB_SIGNER: disabled
+    secrets:
+      - db_owner_password
+      - audit_hmac_key
+      - auth_enc_key
+      - pg_ca_cert
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    networks: [data]
+
+  # ------------------------------------------------------------------ monitoring (optional profile)
+  # docs/RUNBOOK.md §8. Start with:  docker compose ... --profile monitoring up -d
+  # Prometheus scrapes web-1/web-2 /api/metrics over the internal `app` network (bearer METRICS_TOKEN:
+  # ONE secret file ./secrets/metrics_token, METRICS_TOKEN_FILE on web-1/2 and credentials_file here;
+  # 0640 uid 10001 / gid 10001 — Prometheus runs with group 10001 to read it; generate-secrets.sh).
+  # Grafana UI on 127.0.0.1:${GRAFANA_PORT:-3001} only (SSH tunnel / bastion); Prometheus and Alertmanager
+  # have no published ports. Alertmanager alone may leave the host (monitoring-out → your pager / SMTP relay).
+  prometheus:
+    <<: *hardening
+    profiles: [monitoring]
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.5.0}
+    user: "65534:10001"
+    read_only: true
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    secrets: [metrics_token]
+    networks: [app, monitoring]
+    depends_on:
+      web-1: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: "${PROMETHEUS_MEMORY:-1g}" }
+
+  alertmanager:
+    <<: *hardening
+    profiles: [monitoring]
+    image: ${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.28.1}
+    user: "65534:65534"
+    read_only: true
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    networks: [monitoring, monitoring-out]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/-/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128m }
+
+  grafana:
+    <<: *hardening
+    profiles: [monitoring]
+    image: ${GRAFANA_IMAGE:-grafana/grafana-oss:12.0.2}
+    user: "472:0"
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    secrets: [grafana_admin_password]
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    networks: [monitoring, monitoring-ui]
+    depends_on:
+      prometheus: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512m }
+
+networks:
+  edge: {}
+  app:
+    internal: true
+  data:
+    internal: true
+  # web-1/web-2 -> signer only. No internet, no DB.
+  signer:
+    internal: true
+  # scheduler -> fetcher only: the fetcher is not reachable from nginx/web and cannot reach them.
+  fetch-ctl:
+    internal: true
+  # backup -> db: the only source the postgres superuser may connect from (pg_hba, db-entrypoint.sh).
+  db-admin:
+    internal: true
+    ipam:
+      config: [{ subnet: "${DB_ADMIN_SUBNET:-172.30.30.0/24}" }]
+  # Web instances -> bank-independent services we operate (SIEM, optional IdP). Restrict on the host
+  # firewall to those destinations only (RUNBOOK §4.3).
+  siem-out:
+    ipam:
+      config: [{ subnet: "${SIEM_OUT_SUBNET:-172.30.10.0/24}" }]
+  # Fetcher + egress proxy. Host firewall: only EGRESS_PROXY_IP may leave this subnet (tcp/443 + DNS).
+  fetch-egress:
+    ipam:
+      config: [{ subnet: "${FETCH_EGRESS_SUBNET:-172.30.20.0/24}" }]
+  # Monitoring profile: prometheus <-> alertmanager <-> grafana (internal); alertmanager's notification
+  # egress (monitoring-out) and grafana's published UI port (monitoring-ui) — restrict on the host firewall.
+  monitoring:
+    internal: true
+  monitoring-out: {}
+  monitoring-ui: {}
+
+volumes:
+  pgdata: {}
+  pgdata-replica: {}
+  # Shared package store (REPO_DIR). Single host: local volume. Multi-host: NFS/CIFS-backed volume, e.g.
+  #   driver_opts: { type: nfs, o: "addr=nfs.internal,nfsvers=4.1,rw,hard", device: ":/export/patchgate-repo" }
+  repo: {}
+  # Site bundles for the one-line install (read-only in web-1/web-2): <version>/{SHA256SUMS,SHA256SUMS.sig,
+  # patchgate-site-<v>.tar.gz,patchgate-site-<v>-online.tar.gz,install-site.sh} + LATEST. Upload: RUNBOOK §6.
+  site-bundles: {}
+  # Signer audit trail (JSON lines, one per signature/denial); also in the container log — ship both.
+  signer-audit: {}
+  # Monitoring profile (time series, silences, Grafana state)
+  prometheus-data: {}
+  alertmanager-data: {}
+  grafana-data: {}
+
+configs:
+  secrets_fingerprints:
+    file: ./secrets/fingerprints.sha256
+
+secrets:
+  postgres_superuser_password: { file: ./secrets/postgres_superuser_password }
+  db_owner_password: { file: ./secrets/db_owner_password }
+  db_app_password: { file: ./secrets/db_app_password }
+  replication_password: { file: ./secrets/replication_password }
+  audit_hmac_key: { file: ./secrets/audit_hmac_key }
+  worker_token: { file: ./secrets/worker_token }
+  wsus_token: { file: ./secrets/wsus_token }
+  auth_enc_key: { file: ./secrets/auth_enc_key }
+  tactical_api_key: { file: ./secrets/tactical_api_key }
+  job_signer_token: { file: ./secrets/job_signer_token }
+  pg_tls_key: { file: ./secrets/pg_tls_key }
+  pg_tls_cert: { file: ./secrets/pg_tls_cert }
+  pg_ca_cert: { file: ./secrets/pg_ca_cert }     # public DB CA certificate; pg_ca_key is deliberately NOT a secret here
+  # METRICS_TOKEN: web-1/2 (METRICS_TOKEN_FILE) + Prometheus scrape (profile "monitoring"); Grafana admin password (uid 472).
+  metrics_token: { file: ./secrets/metrics_token }
+  grafana_admin_password: { file: ./secrets/grafana_admin_password }

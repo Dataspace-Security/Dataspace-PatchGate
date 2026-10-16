@@ -1,0 +1,56 @@
+# PatchGate lab override for Tactical RMM's official docker-compose.yml.
+#
+# Goal: NO Tactical container can reach the internet.
+#  - every Tactical network is `internal` (no outbound route at all), including nginx's;
+#  - a tiny TCP forwarder (socat, no Tactical code) is the ONLY container on the `edge` network; it
+#    publishes 80/443 and passes inbound connections to nginx. TLS still terminates in Tactical nginx.
+#  - the same ingress also exposes the Bank A connector's package cache (:8443) to the bank PCs;
+#  - MeshCentral uses an offline image (the stock one npm-installs modules from the internet at runtime).
+# The upstream 172.20.0.0/24 subnet collides with other stacks on dev machines, so the lab uses its own.
+networks:
+  proxy:
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.231.50.0/24
+  api-db:
+    internal: true
+  redis:
+    internal: true
+  mesh-db:
+    internal: true
+  edge:
+    driver: bridge
+
+services:
+  tactical-nginx:
+    ports: !reset []
+    networks:
+      proxy:
+        ipv4_address: 10.231.50.20
+
+  tactical-meshcentral:
+    image: patchgate-lab/tactical-meshcentral-offline:latest # built by up.sh from ./meshcentral-offline
+    environment:
+      NGINX_HOST_IP: 10.231.50.20
+
+  lab-ingress:
+    container_name: trmm-lab-ingress
+    image: alpine/socat:latest
+    restart: always
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        socat TCP-LISTEN:4443,fork,reuseaddr TCP:10.231.50.20:4443 &
+        socat TCP-LISTEN:8080,fork,reuseaddr TCP:10.231.50.20:8080 &
+        socat TCP-LISTEN:8443,fork,reuseaddr TCP:10.231.50.40:8443 &
+        wait
+    ports:
+      - "443:4443"
+      - "80:8080"
+      - "8443:8443" # Bank A connector package cache (lab/connector, 10.231.50.40) for the bank PCs
+    networks:
+      proxy:
+        ipv4_address: 10.231.50.30
+      edge: {}

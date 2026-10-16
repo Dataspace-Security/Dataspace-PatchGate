@@ -1,0 +1,16 @@
+# Weekly dependency / base-image / action updates (security fixes arrive as they are published).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /patchgate-web
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 10
+  - package-ecosystem: npm
+    directory: /patchgate-connector
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directories: [/patchgate-web, /patchgate-connector, /deploy/signer, /deploy/egress-proxy, /deploy/backup]
+    schedule: { interval: weekly }

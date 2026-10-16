@@ -1,0 +1,1016 @@
+// PatchGate data model — see ../../docs/ARCHITECTURE.md §9
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  VIEWER
+  OPERATOR // maker
+  APPROVER // checker
+  ADMIN
+}
+
+enum PatchKind {
+  WINDOWS
+  THIRD_PARTY
+  AGENT_UPGRADE // Tactical RMM agent upgrade from the PatchGate mirror
+}
+
+enum InstallerKind {
+  MSI
+  EXE
+}
+
+enum PatchSeverity {
+  CRITICAL
+  IMPORTANT
+  MODERATE
+  LOW
+  UNSPECIFIED
+}
+
+enum EndpointPatchStatus {
+  NEEDED
+  INSTALLED
+  FAILED
+  NOT_APPLICABLE
+}
+
+enum ChangeRequestStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  DEPLOYING
+  COMPLETED
+  PARTIAL
+  FAILED
+  CANCELLED
+}
+
+enum DeploymentStatus {
+  QUEUED // waiting for worker (or endpoint busy / patch not yet scanned)
+  SENDING // worker is pushing to Tactical
+  SENT // install triggered, awaiting confirmation
+  SUCCEEDED
+  FAILED
+  TIMED_OUT
+}
+
+// Why a deployment ended FAILED / TIMED_OUT: only INSTALL counts towards the ring-stop failure rate.
+enum DeploymentFailureKind {
+  INSTALL // the install itself failed / was not confirmed on the PC
+  PLANNING // the change request cannot be delivered to this PC (package missing, no agent build …)
+  CACHE // the site cache could not obtain a package (after retries)
+  RING_STOPPED // not started: the ring was stopped
+  DEADLINE // not started before the change request's deployment deadline
+  UNMANAGED // no active site connector manages the PC
+  INTERNAL // unexpected error while producing jobs for this deployment
+}
+
+enum RebootPolicy {
+  NEVER
+  REQUIRED
+  ALWAYS
+}
+
+enum PackageVerification {
+  PENDING
+  HELD // downloaded + hash/signature checked, waiting for an admin trust decision
+  VERIFIED
+  REJECTED
+}
+
+enum HoldReason {
+  FIRST_SIGNER // app has no pinned signer yet: approving pins this organisation
+  SIGNER_CHANGED // valid signature from an organisation not in the pin list
+  HASH_DRIFT // pinned signer, but bytes differ from the catalog hash (rolling vendor URL)
+}
+
+enum WindowsUpdateSource {
+  PATCHGATE
+  WSUS
+}
+
+// A client bank. Users with tenantId = null are OUR team (platform staff, all banks).
+model Tenant {
+  id                  String              @id @default(cuid())
+  slug                String              @unique // short code, e.g. "bank-a"
+  name                String
+  active              Boolean             @default(true)
+  // Maker-checker: every change request for this bank needs at least one approver FROM this bank. Always
+  // true (platform rule; DB CHECK "Tenant_requireBankApproval_always", migration 20261016130000).
+  requireBankApproval Boolean             @default(true)
+  // Where this bank's PCs get Windows updates: PATCHGATE = offline scan + cached Microsoft files via the
+  // connector (no WSUS, no internet); WSUS = the bank's own WSUS, PatchGate only approves (legacy).
+  windowsUpdateSource WindowsUpdateSource @default(PATCHGATE)
+  createdAt           DateTime            @default(now())
+  // ---- Bank self-service policies (/settings, migration 20261016100000) ----
+  // Bank's local timezone: maintenance-window previews are shown in it.
+  timezone            String              @default("Asia/Kolkata")
+  // Reboot behaviour pre-selected for new change requests (a ring may override it).
+  defaultRebootPolicy RebootPolicy        @default(REQUIRED)
+  // An approved change request must be started within N days of its final approval (0 = never expires).
+  approvalExpiryDays  Int                 @default(14)
+  // Requests targeting more PCs than this need a SECOND distinct approver (0 = no limit).
+  maxTargetsPerCr     Int                 @default(0)
+
+  users          User[]
+  connectors     Connector[]
+  enrollments    ConnectorEnrollment[]
+  jobs           ConnectorJob[]
+  apps           TenantApp[]
+  rings          Ring[]
+  windows        MaintenanceWindow[]
+  endpoints      Endpoint[]
+  changeRequests ChangeRequest[]
+  deployments    Deployment[]
+  patchStates    EndpointPatchState[]
+  software       InstalledSoftware[]
+  discovered     DiscoveredApp[]
+  crApprovals    ChangeRequestApproval[]
+}
+
+model User {
+  id                 String    @id @default(cuid())
+  upn                String    @unique // login name (email-style), lower-case
+  name               String
+  role               UserRole  @default(VIEWER)
+  // null = our team (sees all banks); otherwise the user's bank (sees only that bank)
+  tenantId           String?
+  // ---- Local login (password + TOTP) ----
+  passwordHash       String? // scrypt$N$r$p$salt$hash
+  passwordChangedAt  DateTime?
+  mustChangePassword Boolean   @default(false)
+  totpSecretEnc      String? // AES-256-GCM(secret) with AUTH_ENC_KEY
+  totpEnabled        Boolean   @default(false)
+  totpLastStep       Int? // last accepted 30-s step: a code can be used only once
+  failedLogins       Int       @default(0)
+  lockedUntil        DateTime?
+  // Local kill switch: false blocks sign-in even if the IdP still grants a role.
+  active             Boolean   @default(true)
+  // Stable IdP subject (OIDC "sub"/"oid") — guards against UPN reuse after an account is recycled.
+  externalId         String?   @unique
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+
+  createdRequests  ChangeRequest[] @relation("CreatedBy")
+  approvedRequests ChangeRequest[] @relation("ApprovedBy")
+  sessions         Session[]
+  // Restrict: deleting a bank must never turn its users into platform staff (tenantId = null).
+  tenant           Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+}
+
+// Password accepted, second factor pending (5 min, single use, attempt-limited). Cookie holds the token.
+model AuthChallenge {
+  id               String   @id // sha256(token), hex
+  userId           String
+  // ENROLL: user has no TOTP yet — pendingSecretEnc is the secret being set up
+  kind             String // "VERIFY" | "ENROLL"
+  pendingSecretEnc String?
+  attempts         Int      @default(0)
+  returnTo         String   @default("/")
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+// Server-side session; the browser only holds an opaque random token (its SHA-256 is the id).
+model Session {
+  id         String   @id // sha256(token), hex
+  userId     String
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  expiresAt  DateTime // absolute cap
+  idToken    String? // id_token_hint for IdP logout
+  ip         String?
+  userAgent  String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// In-flight OIDC login (single use, short-lived): PKCE verifier, state and nonce never leave the server.
+model OidcLogin {
+  id        String   @id // sha256(cookie value), hex
+  state     String
+  nonce     String
+  verifier  String
+  returnTo  String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+model Ring {
+  id           String        @id @default(cuid())
+  tenantId     String // owning bank (row-level security key)
+  name         String // Ring0-Test, Ring1-Pilot, Ring2-Prod
+  wsusGroup    String
+  order        Int
+  createdAt    DateTime      @default(now())
+  // Per-ring override of Tenant.defaultRebootPolicy for new change requests (null = bank default).
+  rebootPolicy RebootPolicy?
+
+  endpoints      Endpoint[]
+  windows        MaintenanceWindow[]
+  changeRequests ChangeRequest[]
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, wsusGroup])
+  @@unique([tenantId, order])
+}
+
+model MaintenanceWindow {
+  id           String       @id @default(cuid())
+  tenantId     String // owning bank (row-level security key)
+  ringId       String
+  name         String
+  cron         String // e.g. "0 2 * * 0" (Sunday 02:00)
+  durationMin  Int
+  timezone     String       @default("Asia/Kolkata")
+  rebootPolicy RebootPolicy @default(REQUIRED)
+
+  ring           Ring            @relation(fields: [ringId], references: [id])
+  changeRequests ChangeRequest[]
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+}
+
+model Endpoint {
+  id                  String    @id @default(cuid())
+  tenantId            String // owning bank (row-level security key)
+  tacticalAgentId     String    @unique
+  hostname            String
+  client              String?
+  site                String? // branch
+  osName              String?
+  // From Tactical: agent version + architecture (amd64 / 386) for agent upgrades
+  agentVersion        String?
+  goarch              String?
+  ringId              String?
+  lastScanAt          DateTime?
+  lastScanRequestedAt DateTime?
+  // last ingest attempt (success or failure) so unreachable PCs do not starve the queue
+  ingestAttemptAt     DateTime?
+  lastSeenAt          DateTime?
+  // Windows updates installed through PatchGate (WU_INSTALL) that need a restart to complete
+  rebootRequired      Boolean   @default(false)
+  rebootRequiredAt    DateTime?
+  // Last offline Windows Update scan (WU_SCAN) result for this PC
+  lastWuScanAt        DateTime?
+  lastWuScanError     String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  ring        Ring?                @relation(fields: [ringId], references: [id])
+  patchStates EndpointPatchState[]
+  deployments Deployment[]
+  software    InstalledSoftware[]
+
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  // Site connector that manages this PC (exactly one)
+  connectorId String?
+  connector   Connector? @relation(fields: [connectorId], references: [id], onDelete: Restrict)
+
+  @@index([ringId])
+  @@index([site])
+  @@index([connectorId])
+  @@index([tenantId])
+}
+
+model Patch {
+  id             String        @id @default(cuid())
+  kind           PatchKind
+  // WINDOWS: WSUS / WUA update GUID. THIRD_PARTY: "<appId>@<version>".
+  externalId     String        @unique
+  kb             String?
+  title          String
+  classification String?
+  severity       PatchSeverity @default(UNSPECIFIED)
+  cves           String[]      @default([])
+  releasedAt     DateTime?
+  supersededById String?
+  appVersionId   String?       @unique
+  // AGENT_UPGRADE: target Tactical agent version (files resolved per-arch from MirroredRelease)
+  agentVersion   String?
+  createdAt      DateTime      @default(now())
+
+  supersededBy Patch?               @relation("Supersedence", fields: [supersededById], references: [id])
+  supersedes   Patch[]              @relation("Supersedence")
+  appVersion   AppVersion?          @relation(fields: [appVersionId], references: [id])
+  states       EndpointPatchState[]
+  requests     ChangeRequestPatch[]
+
+  @@index([kind, severity])
+  @@index([kb])
+}
+
+model EndpointPatchState {
+  tenantId         String // denormalised for row-level security
+  endpointId       String
+  patchId          String
+  status           EndpointPatchStatus
+  // Tactical WinUpdate.pk — needed to flip approval via PUT /winupdate/{pk}/
+  tacticalUpdatePk Int?
+  lastResult       String?
+  updatedAt        DateTime            @updatedAt
+
+  endpoint Endpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  patch    Patch    @relation(fields: [patchId], references: [id], onDelete: Cascade)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@id([endpointId, patchId])
+  @@index([tenantId])
+  @@index([patchId, status])
+  // Compliance reports: "missing patches of one bank" without scanning every bank's states
+  @@index([tenantId, status, patchId])
+}
+
+model ChangeRequest {
+  id                String              @id @default(cuid())
+  tenantId          String // owning bank (row-level security key)
+  title             String
+  ticketRef         String? // bank change-management ticket
+  ringId            String
+  windowId          String?
+  status            ChangeRequestStatus @default(DRAFT)
+  createdById       String
+  approvedById      String?
+  rejectReason      String?
+  createdAt         DateTime            @default(now())
+  submittedAt       DateTime?
+  decidedAt         DateTime?
+  completedAt       DateTime?
+  // Target endpoints are snapshotted when the request is submitted (ChangeRequestTarget): the approver
+  // approves exactly these PCs, and growing the ring later never widens an approved request.
+  targetCount       Int?
+  // Deployment deadline: deployments not started by then are TIMED_OUT so the request finalises.
+  deployDeadlineAt  DateTime?
+  // ---- Emergency changes + approval policy (migration 20261016100000) ----
+  // Emergency: needs TWO distinct approvers (neither the maker); may bypass the maintenance window only
+  // when both approvers explicitly confirmed "deploy now" (then windowId is cleared, bypassedWindowId kept).
+  emergency         Boolean             @default(false)
+  emergencyReason   String?
+  // Reboot behaviour chosen on the request (defaults: ring override → bank default). Null = window's policy.
+  rebootPolicy      RebootPolicy?
+  // Distinct approvals needed (fixed on submit): 2 for emergency or above the bank's target limit.
+  requiredApprovals Int                 @default(1)
+  // Final approval is valid until then (bank policy approvalExpiryDays); deploy is refused afterwards.
+  approvalExpiresAt DateTime?
+  windowBypass      Boolean             @default(false)
+  bypassedWindowId  String?
+
+  ring        Ring                    @relation(fields: [ringId], references: [id])
+  window      MaintenanceWindow?      @relation(fields: [windowId], references: [id])
+  createdBy   User                    @relation("CreatedBy", fields: [createdById], references: [id])
+  approvedBy  User?                   @relation("ApprovedBy", fields: [approvedById], references: [id])
+  patches     ChangeRequestPatch[]
+  deployments Deployment[]
+  targets     ChangeRequestTarget[]
+  approvals   ChangeRequestApproval[]
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([status])
+  @@index([tenantId])
+}
+
+// One checker decision "approve" on a change request (multi-approver requests: emergency / large).
+// DB trigger: the approver can never be the request's maker. One row per (request, user).
+model ChangeRequestApproval {
+  id              String   @id @default(cuid())
+  tenantId        String // owning bank (row-level security key)
+  changeRequestId String
+  userId          String
+  userUpn         String
+  userName        String
+  // Approver's bank at decision time (null = PatchGate platform staff)
+  approverBankId  String?
+  // Emergency only: this approver confirmed "deploy now" (bypass the maintenance window)
+  deployNow       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  changeRequest ChangeRequest @relation(fields: [changeRequestId], references: [id], onDelete: Cascade)
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([changeRequestId, userId])
+  @@index([tenantId])
+}
+
+// Platform-wide account security policy (single row id = "platform"; platform admins edit it at /settings/security).
+model SecurityPolicy {
+  id                    String   @id @default("platform")
+  // Password older than this forces a change at the next sign-in (0 = off)
+  passwordMaxAgeDays    Int      @default(0)
+  // Users without activity for this long are deactivated by the worker (0 = off)
+  inactivityDisableDays Int      @default(90)
+  // Concurrent sessions per user; the oldest are revoked on a new sign-in (0 = unlimited)
+  maxSessionsPerUser    Int      @default(0)
+  updatedAt             DateTime @updatedAt
+  updatedBy             String?
+}
+
+// Endpoints a change request was submitted (and therefore approved) for — the only PCs it deploys to.
+model ChangeRequestTarget {
+  changeRequestId String
+  endpointId      String
+  tenantId        String // owning bank (row-level security key)
+
+  changeRequest ChangeRequest @relation(fields: [changeRequestId], references: [id], onDelete: Cascade)
+
+  @@id([changeRequestId, endpointId])
+  @@index([tenantId])
+}
+
+model ChangeRequestPatch {
+  changeRequestId String
+  patchId         String
+
+  changeRequest ChangeRequest @relation(fields: [changeRequestId], references: [id], onDelete: Cascade)
+  patch         Patch         @relation(fields: [patchId], references: [id])
+
+  @@id([changeRequestId, patchId])
+}
+
+model Deployment {
+  id              String                 @id @default(cuid())
+  tenantId        String // owning bank (row-level security key)
+  changeRequestId String
+  endpointId      String
+  status          DeploymentStatus       @default(QUEUED)
+  attempts        Int                    @default(0)
+  // set when a worker claims it (SENDING); stale claims are recovered after a crash
+  claimedAt       DateTime?
+  // Windows update GUIDs actually sent for install on this endpoint (completion is checked against these)
+  targetGuids     String[]               @default([])
+  note            String?
+  nextAttemptAt   DateTime               @default(now())
+  error           String?
+  failureKind     DeploymentFailureKind?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  // Denormalised Endpoint.connectorId (kept in sync for QUEUED deployments by a DB trigger), so the
+  // per-connector pump reads one index instead of joining Endpoint for every queued deployment.
+  connectorId     String?
+
+  changeRequest ChangeRequest @relation(fields: [changeRequestId], references: [id])
+  endpoint      Endpoint      @relation(fields: [endpointId], references: [id])
+  // + partial unique index (migration SQL): one SENDING/SENT deployment per endpoint
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([changeRequestId, endpointId])
+  @@index([status, nextAttemptAt])
+  @@index([tenantId])
+  @@index([connectorId, status, nextAttemptAt])
+}
+
+// ---- Third-party apps (ARCHITECTURE §6A) ----
+
+model App {
+  id                 String   @id @default(cuid())
+  wingetId           String   @unique // e.g. "Google.Chrome"
+  displayName        String
+  // Regex matched against Tactical software inventory "name"
+  inventoryMatch     String
+  // Pinned Authenticode organisations ("O=A; O=B"). Null = learn from the first download (admin approves).
+  expectedPublisher  String?
+  // First-hop download hosts. Empty = the vendor host named in the winget manifest.
+  allowedDomains     String[]
+  // true: every redirect hop must be in allowedDomains. false: redirects may go to any public https
+  // host (vendor mirror networks) because the bytes are verified by SHA-256 + signer pin anyway.
+  strictHosts        Boolean  @default(false)
+  // Rolling vendor URLs (e.g. Chrome): bytes newer than the catalog hash are HELD for approval of the
+  // exact hash instead of rejected — only when the signer is already pinned.
+  allowHashDrift     Boolean  @default(false)
+  autoUpdateDisabled Boolean  @default(false) // confirmed via GPO
+  createdAt          DateTime @default(now())
+
+  versions   AppVersion[]
+  discovered DiscoveredApp[]
+  tenants    TenantApp[]
+}
+
+model AppVersion {
+  id            String              @id @default(cuid())
+  appId         String
+  version       String
+  installerUrl  String
+  sha256        String
+  silentArgs    String
+  installerKind InstallerKind       @default(MSI)
+  // winget technology: wix | msi | nullsoft | inno | burn | exe
+  installerType String              @default("msi")
+  verification  PackageVerification @default(PENDING)
+  rejectReason  String?
+  // Trust evidence captured at download time
+  signerOrg     String? // organisation from the Authenticode certificate
+  signerSubject String?
+  catalogSha256 String? // what winget said (differs from sha256 only for HASH_DRIFT)
+  fileVersion   String? // version read from the file itself
+  holdReason    HoldReason?
+  decidedBy     String?
+  decidedAt     DateTime?
+  repoPath      String? // path on internal repo after publish (or in .pending while HELD)
+  availableAt   DateTime? // end of quarantine soak
+  createdAt     DateTime            @default(now())
+
+  app   App    @relation(fields: [appId], references: [id])
+  patch Patch?
+
+  @@unique([appId, version])
+}
+
+// ---- Audit (append-only, hash-chained) ----
+
+model AuditEvent {
+  seq      BigInt   @id @default(autoincrement())
+  // Audit chain owner: a bank, or null = platform chain. Each chain is hashed and exported separately.
+  tenantId String?
+  ts       DateTime @default(now())
+  actor    String
+  action   String
+  entity   String
+  entityId String
+  payload  Json
+  prevHash String
+  hash     String   @unique
+
+  @@index([entity, entityId])
+  @@index([tenantId, seq])
+}
+
+// Incremental audit-chain verification (worker tick): where the last verified run of each chain stopped.
+// The readiness probe only reads these rows; it never scans a chain.
+model AuditVerifyCheckpoint {
+  chain          String   @id // bank id, or "platform"
+  tenantId       String?
+  seq            BigInt // last verified AuditEvent.seq (0 = empty chain)
+  hash           String // its chain hash (GENESIS for an empty chain)
+  count          BigInt // events verified so far
+  anchorSeq      BigInt // highest SIEM anchor seq checked
+  valid          Boolean
+  problem        String?
+  verifiedAt     DateTime
+  fullVerifiedAt DateTime // last time the chain was verified from genesis
+}
+
+// ---- Audit export to bank SIEM (tail-truncation detection) ----
+
+// One row per successful export batch. SIEM holds the authoritative copy; this table lets the
+// panel show export lag and lets verify detect "DB head is behind the last exported anchor".
+model AuditAnchor {
+  id         String   @id @default(cuid())
+  tenantId   String? // chain this anchor belongs to (null = platform)
+  seq        BigInt // last AuditEvent.seq included in this export
+  hash       String // that event's chain hash
+  eventCount Int // events shipped in this batch
+  exportedAt DateTime @default(now())
+  target     String // e.g. "syslog-tls://siem.bank.local:6514"
+
+  @@index([tenantId, seq])
+}
+
+// ---- Tactical RMM release mirror (offline Tactical gets updates only from PatchGate) ----
+
+enum MirrorComponent {
+  TACTICAL_AGENT
+  TACTICAL_SERVER
+}
+
+model MirroredRelease {
+  id           String              @id @default(cuid())
+  component    MirrorComponent
+  version      String
+  assetName    String
+  sourceUrl    String
+  sha256       String
+  sizeBytes    BigInt
+  repoPath     String
+  verification PackageVerification @default(PENDING)
+  rejectReason String?
+  createdAt    DateTime            @default(now())
+
+  @@unique([component, version, assetName])
+}
+
+// ---- Fetcher run log ----
+
+model FetchRun {
+  id         String    @id @default(cuid())
+  source     String // "winget:<id>" | "tactical-agent" | "tactical-server" | "wsus"
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  ok         Boolean?
+  message    String?
+}
+
+// ---- Worker leases (prevent overlapping /api/worker/tick or /fetch runs) ----
+
+model WorkerLease {
+  name      String   @id // "tick" | "fetch"
+  holder    String
+  expiresAt DateTime
+}
+
+// Worker step summary (one row per tick step, upserted every tick) for /api/metrics and /operations.
+// Platform data: no tenantId, no RLS. Counters only grow (Prometheus counters); the rest is "last run".
+model WorkerStepRun {
+  step            String    @id // runWorkerTick step name, or "tick" for the whole run
+  lastRunAt       DateTime
+  lastDurationMs  Int
+  lastOk          Boolean
+  lastStatus      String // step status text, truncated ("ok", "pushed 3", "FAILED: …")
+  lastSuccessAt   DateTime?
+  lastFailureAt   DateTime?
+  runs            BigInt    @default(0)
+  failures        BigInt    @default(0)
+  totalDurationMs BigInt    @default(0)
+}
+
+// Software inventory reported by Tactical for each PC (replaced on every successful ingest).
+model InstalledSoftware {
+  id            String   @id @default(cuid())
+  tenantId      String // owning bank (row-level security key)
+  endpointId    String
+  name          String
+  publisher     String?
+  version       String?
+  productCode   String? // MSI product code from the uninstall string, lower-case "{...}"
+  // Normalised (winget-style) name + publisher used for catalog matching
+  normName      String
+  normPublisher String?
+  updatedAt     DateTime @updatedAt
+
+  endpoint Endpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([endpointId, name, version])
+  @@index([normName])
+  @@index([productCode])
+  @@index([tenantId])
+}
+
+enum DiscoveryMatch {
+  PRODUCT_CODE
+  NAME_PUBLISHER
+  NONE
+}
+
+// One row per distinct installed product across the fleet, matched to a winget package when possible.
+model DiscoveredApp {
+  id            String         @id @default(cuid())
+  tenantId      String // owning bank (row-level security key)
+  key           String // normName|normPublisher (unique per bank)
+  displayName   String
+  publisher     String?
+  wingetId      String?
+  match         DiscoveryMatch @default(NONE)
+  endpointCount Int            @default(0)
+  versions      String[]
+  appId         String? // set once an admin manages it
+  ignored       Boolean        @default(false)
+  // Bank admin asked for a NEW shared allow-list entry: waits for a PatchGate platform admin
+  requestedAt   DateTime?
+  requestedBy   String?
+  updatedAt     DateTime       @updatedAt
+
+  app App? @relation(fields: [appId], references: [id])
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, key])
+  @@index([wingetId])
+  @@index([requestedAt])
+}
+
+// ======================= Bank-side connectors (outbound-only link) =======================
+
+enum ConnectorStatus {
+  ACTIVE
+  REVOKED
+}
+
+// One per bank site, next to that site's Tactical server. Authenticates with an Ed25519 key it generated itself.
+model Connector {
+  id                    String          @id @default(cuid())
+  tenantId              String
+  name                  String // site, e.g. "Head office DC"
+  publicKey             String // Ed25519 public key, base64 (raw 32 bytes)
+  // Re-enrolment is two-phase: the new key waits here until it signs its first request (then it replaces
+  // publicKey); until then the old key keeps working, so a refused init never locks out the site.
+  pendingPublicKey      String?
+  pendingKeyAt          DateTime?
+  status                ConnectorStatus @default(ACTIVE)
+  version               String?
+  enrolledAt            DateTime        @default(now())
+  lastSeenAt            DateTime?
+  // Inside the bank: base URL PCs download approved packages from (the connector cache)
+  cacheBaseUrl          String?
+  // Bank LAN protection
+  maxConcurrentInstalls Int             @default(50)
+  bandwidthLimitMbps    Int? // cache → PCs cap; null = unlimited
+  standbyOf             String? // HA: standby of another connector at the same site
+  // Last heartbeat body (cache size, Tactical reachability, agent count, SIEM relay) for the health views
+  heartbeat             Json?
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  endpoints Endpoint[]
+  jobs      ConnectorJob[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+// One-time enrolment code (created by our admin for a bank site; redeemed once, within 24 h).
+model ConnectorEnrollment {
+  id        String    @id // sha256(code), hex
+  tenantId  String
+  name      String // site name the connector will get
+  createdBy String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+}
+
+// Replay protection for signed connector requests (rows expire after the allowed clock skew).
+model ConnectorNonce {
+  connectorId String
+  nonce       String
+  expiresAt   DateTime
+
+  @@id([connectorId, nonce])
+  @@index([expiresAt])
+}
+
+enum ConnectorJobType {
+  SYNC_AGENTS
+  SCAN
+  COLLECT
+  DEPLOY_WINDOWS
+  DEPLOY_PACKAGE
+  RESET_APPROVALS
+  CACHE_PACKAGE
+  WU_SCAN
+  WU_INSTALL
+}
+
+enum ConnectorJobStatus {
+  QUEUED
+  DELIVERED
+  SUCCEEDED
+  FAILED
+  EXPIRED
+  CANCELLED
+}
+
+// Typed, signed unit of work for one connector. Idempotent by id; a result is accepted once.
+model ConnectorJob {
+  id              String             @id @default(cuid())
+  tenantId        String
+  connectorId     String
+  type            ConnectorJobType
+  payload         Json
+  signature       String // Ed25519 over the canonical job envelope (PatchGate job-signing key)
+  status          ConnectorJobStatus @default(QUEUED)
+  attempts        Int                @default(0)
+  notBefore       DateTime           @default(now()) // maintenance window start / staggered start
+  expiresAt       DateTime
+  deliveredAt     DateTime?
+  completedAt     DateTime?
+  result          Json?
+  error           String?
+  // Results are accepted fast and ingested asynchronously: set once the handler has applied the result.
+  processedAt     DateTime?
+  processAttempts Int                @default(0)
+  deploymentId    String?
+  changeRequestId String?
+  // Idempotency key: the failed job this one retries (a re-applied result never schedules a second retry)
+  retryOfJobId    String?            @unique
+  createdAt       DateTime           @default(now())
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  connector Connector @relation(fields: [connectorId], references: [id], onDelete: Restrict)
+
+  @@index([connectorId, status, notBefore])
+  @@index([tenantId, status])
+  @@index([deploymentId])
+}
+
+// A bank opts in to a shared, verified third-party app.
+model TenantApp {
+  tenantId  String
+  appId     String
+  enabledAt DateTime @default(now())
+  enabledBy String
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  app    App    @relation(fields: [appId], references: [id], onDelete: Restrict)
+
+  @@id([tenantId, appId])
+}
+
+// ======================= Windows updates through PatchGate (no WSUS, no internet on PCs) =======================
+// SHARED platform catalog (no tenantId, no RLS): Microsoft metadata + verified Microsoft files are the same for
+// every bank. Per-PC applicability lives in EndpointPatchState (tenant-owned, RLS).
+
+// Microsoft's signed offline scan catalog (wsusscn2.cab), one row per distinct download.
+model WsusScanCab {
+  id            String              @id @default(cuid())
+  sha256        String              @unique
+  sizeBytes     BigInt
+  sourceUrl     String
+  // HTTP validators of the source when downloaded (change detection without re-downloading ~700 MB)
+  etag          String?
+  lastModified  String?
+  verification  PackageVerification @default(PENDING)
+  rejectReason  String?
+  signerSubject String?
+  repoPath      String?
+  createdAt     DateTime            @default(now())
+
+  @@index([verification, createdAt])
+}
+
+// One Microsoft update as reported by the offline scan (id = update GUID, lower-case = Patch.externalId).
+// Where an update's metadata + file binding come from. PENDING: GUID reported by a PC scan, not yet looked
+// up; RESOLVED: title/KB/severity/files bound from the Microsoft Update Catalog (immutable afterwards, DB
+// trigger); UNRESOLVABLE: Microsoft does not publish installable .msu/.cab files for it (undeliverable).
+enum WinUpdateCatalogState {
+  PENDING
+  RESOLVED
+  UNRESOLVABLE
+}
+
+// REPORTED: legacy binding from a PC report (never installed any more, removed when the update resolves).
+// CATALOG: bound from the Microsoft Update Catalog (the only source planInstall uses).
+enum WinUpdateFileSource {
+  REPORTED
+  CATALOG
+}
+
+model WinUpdate {
+  id              String                @id
+  revision        Int
+  kb              String?
+  title           String
+  msrcSeverity    String?
+  classification  String?
+  // Bank whose scan first reported the GUID (PC reports only say WHICH updates apply, never what they are)
+  firstTenantId   String?
+  catalogState    WinUpdateCatalogState @default(PENDING)
+  resolveAttempts Int                   @default(0)
+  nextResolveAt   DateTime              @default(now())
+  resolveError    String?
+  resolvedAt      DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  files WinUpdateFile[]
+
+  @@index([catalogState, nextResolveAt])
+}
+
+// A Microsoft download of an update. Fetched by PatchGate only (exact host allow-list), verified by the
+// digest the catalog reported + Microsoft Authenticode, then quarantined like third-party packages.
+model WinUpdateFile {
+  id             String              @id @default(cuid())
+  updateId       String
+  url            String // normalised https URL actually fetched
+  name           String
+  kind           String // "msu" | "cab"
+  // install order within the update (as the scan reported the files)
+  ordinal        Int                 @default(0)
+  declaredSize   BigInt? // size reported by the scan (0/unknown = null)
+  sha1           String? // expected digest (hex) from the catalog / Microsoft file name
+  sha256         String? // actual SHA-256 after download
+  expectedSha256 String?
+  sizeBytes      BigInt?
+  verification   PackageVerification @default(PENDING)
+  source         WinUpdateFileSource @default(REPORTED)
+  rejectReason   String?
+  signerSubject  String?
+  repoPath       String?
+  attempts       Int                 @default(0)
+  nextAttemptAt  DateTime            @default(now())
+  lastError      String?
+  verifiedAt     DateTime?
+  availableAt    DateTime? // end of quarantine soak
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  update WinUpdate @relation(fields: [updateId], references: [id], onDelete: Cascade)
+
+  @@unique([updateId, url])
+  @@index([verification, nextAttemptAt])
+}
+
+// ======================= Notifications (transactional outbox) =======================
+// Rows are written in the SAME transaction as the change that triggers them (src/lib/notify/enqueue.ts) and
+// delivered by the worker tick (src/lib/notify/deliver.ts). Recipients are resolved when the row is written.
+
+enum NotificationChannel {
+  EMAIL
+  WEBHOOK
+}
+
+enum NotificationStatus {
+  PENDING // waiting for (re)delivery at nextAttemptAt
+  SENDING // claimed by a worker
+  SENT
+  DEAD // gave up (max attempts / permanent error) — visible in the outbox, can be retried by a platform admin
+  SKIPPED // channel not configured (SMTP_URL / NOTIFY_WEBHOOK_ALLOWED_HOSTS unset) or target no longer allowed
+}
+
+model Notification {
+  id              String              @id @default(cuid())
+  tenantId        String? // bank the event concerns (row-level security key); null = platform event
+  event           String // NotificationEvent (src/lib/notify/events.ts)
+  severity        String // info | warning | critical
+  channel         NotificationChannel
+  target          String // e-mail address, or webhook URL (never shown unmasked)
+  recipientUserId String?
+  subject         String
+  bodyText        String
+  bodyHtml        String
+  link            String?
+  status          NotificationStatus  @default(PENDING)
+  attempts        Int                 @default(0)
+  nextAttemptAt   DateTime            @default(now())
+  claimedAt       DateTime?
+  lastError       String?
+  createdAt       DateTime            @default(now())
+  sentAt          DateTime?
+
+  @@index([status, nextAttemptAt])
+  @@index([tenantId, createdAt])
+  @@index([createdAt])
+}
+
+// Per-bank (scope = bank id) or platform (scope = "platform") notification settings.
+model NotificationSetting {
+  scope             String   @id // bank id, or "platform"
+  tenantId          String? // row-level security key (null = platform settings)
+  // Teams / Slack compatible incoming-webhook URLs (https, host allow-listed by NOTIFY_WEBHOOK_ALLOWED_HOSTS),
+  // encrypted at rest with AUTH_ENC_KEY (src/lib/notify/webhook-store.ts): sealed boxes, never plaintext.
+  webhookUrlsEnc    String[] @default([])
+  // Plaintext URLs from before encryption (migration 20261016120000): drained into webhookUrlsEnc by the app.
+  webhookUrlsLegacy String[] @default([])
+  // Event types switched OFF for this scope (new event types are on by default; critical ones cannot be off)
+  disabledEvents    String[] @default([])
+  updatedBy         String?
+  updatedAt         DateTime @updatedAt
+}
+
+// A user opted out of one non-critical event type (critical events are always delivered).
+model NotificationOptOut {
+  userId    String
+  event     String
+  createdAt DateTime @default(now())
+
+  @@id([userId, event])
+}
+
+// Raised alert conditions (e.g. SIEM export stale for one chain) so a condition notifies once, not every tick.
+model NotificationAlert {
+  key      String   @id // e.g. "siem-stale:<chain>"
+  tenantId String? // row-level security key (null = platform)
+  raisedAt DateTime @default(now())
+}
+
+// Connector offline episodes (> 10 min without heartbeat): drives offline/online notifications and the
+// connector uptime figures of compliance reports.
+model ConnectorOutage {
+  id          String    @id @default(cuid())
+  tenantId    String // owning bank (row-level security key)
+  connectorId String
+  startedAt   DateTime // last heartbeat before the outage
+  detectedAt  DateTime  @default(now())
+  endedAt     DateTime? // first heartbeat after it (null = still offline)
+
+  @@index([tenantId, startedAt])
+  @@index([connectorId, endedAt])
+}

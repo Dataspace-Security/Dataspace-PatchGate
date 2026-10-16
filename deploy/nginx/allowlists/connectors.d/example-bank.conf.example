@@ -1,0 +1,5 @@
+# Bank A — connector egress NAT ranges. Copy to <bank-slug>.conf and add
+#   include /etc/nginx/allowlists/connectors.d/<bank-slug>.conf;   to ../connectors.conf
+# Tenant: <Tenant.id> / <slug>   Owner: <bank security contact>   Change: CHG-0000   Review by: YYYY-MM-DD
+# 203.0.113.10/32 1;   # head office DC egress NAT
+# 198.51.100.0/29 1;   # DR site egress NAT

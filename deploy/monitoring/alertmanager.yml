@@ -1,0 +1,48 @@
+# PatchGate — Alertmanager (compose profile "monitoring").
+#
+# Fill in the receivers for YOUR on-call tooling before go-live (pager for P1, team channel for P2/P3).
+# Secrets (SMTP password, webhook URLs with tokens) belong in files under deploy/secrets/, referenced with
+# *_file options — never inline here. Until configured, alerts are visible in the Alertmanager/Grafana UI only.
+
+route:
+  receiver: team
+  group_by: [alertname, bank, chain, connector]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [priority="P1"]
+      receiver: oncall
+      repeat_interval: 30m
+    - matchers: [severity="info"]
+      receiver: team
+      repeat_interval: 24h
+
+inhibit_rules:
+  # A down / not-ready instance explains everything else from that instance.
+  - source_matchers: [alertname=~"PatchGateInstanceDown|PatchGateNotReady"]
+    target_matchers: [alertname="PatchGateMetricsPartFailing"]
+  - source_matchers: [alertname="PatchGateConnectorOfflineLong"]
+    target_matchers: [alertname="PatchGateConnectorOffline"]
+    equal: [bank, connector]
+  - source_matchers: [alertname="PatchGateSiemExportLagCritical"]
+    target_matchers: [alertname="PatchGateSiemExportLag"]
+    equal: [chain]
+  - source_matchers: [alertname="PatchGateTlsCertExpiringSoon"]
+    target_matchers: [alertname="PatchGateTlsCertExpiring"]
+
+receivers:
+  - name: oncall
+    # Example (pager / incident tool webhook; URL with its token kept in a secret file):
+    # webhook_configs:
+    #   - url_file: /run/secrets/alert_oncall_webhook_url
+    #     send_resolved: true
+  - name: team
+    # Example (e-mail via the platform relay):
+    # email_configs:
+    #   - to: patchgate-ops@example.com
+    #     from: alertmanager@patchgate.example.com
+    #     smarthost: smtp.example.com:587
+    #     auth_username: alertmanager
+    #     auth_password_file: /run/secrets/alert_smtp_password
+    #     send_resolved: true

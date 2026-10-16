@@ -1,0 +1,5 @@
+# build output (700 MB) and anything a test run writes (logins.txt holds test passwords)
+out/
+logs/
+logins.txt
+patchgate-test-ca.pem

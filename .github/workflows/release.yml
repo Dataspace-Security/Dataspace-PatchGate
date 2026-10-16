@@ -1,0 +1,184 @@
+# PatchGate release — on a version tag (v1.2.3 / v1.2.3-rc1).
+#   1. release/release.sh <version> --ci-install --push <registry>   (full gate incl. integration, images,
+#      SBOMs, scans — fails on CRITICAL unless allow_vulns — bundles, SHA256SUMS)
+#   2. cosign: key-based when the COSIGN_PRIVATE_KEY secret exists (release.sh signs), otherwise keyless
+#      (GitHub OIDC → Fulcio/Rekor) for every pushed image digest, the SBOM attestations and SHA256SUMS
+#   3. GitHub release with bundles, SBOMs, scan summaries, manifest, release notes and SHA256SUMS
+#
+# Secrets (repository or "release" environment):
+#   REGISTRY            e.g. registry.example.com/patchgate   (default: ghcr.io/<owner>, with GITHUB_TOKEN)
+#   REGISTRY_USERNAME   REGISTRY_PASSWORD                     (not needed for ghcr.io)
+#   COSIGN_PRIVATE_KEY  COSIGN_PASSWORD  COSIGN_PUBLIC_KEY    (optional: key-based signing)
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      allow_vulns:
+        description: "Do not fail on CRITICAL vulnerabilities (they are still reported)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: write     # create the GitHub release
+      packages: write     # push to ghcr.io (default registry)
+      id-token: write     # keyless cosign (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Version from tag
+        id: v
+        run: |
+          ref="${GITHUB_REF_NAME}"
+          case "$ref" in v*) ;; *) echo "::error::run this workflow on a v* tag (got $ref)"; exit 1 ;; esac
+          version="${ref#v}"
+          file="$(tr -d ' \r\n' < VERSION)"
+          [ "$version" = "$file" ] || { echo "::error::tag $ref does not match VERSION $file"; exit 1; }
+          prerelease=false; case "$version" in *-*) prerelease=true ;; esac
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Registry
+        id: reg
+        env:
+          REGISTRY: ${{ secrets.REGISTRY }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          reg="${REGISTRY:-ghcr.io/$OWNER}"
+          echo "registry=$(printf '%s' "$reg" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "host=${reg%%/*}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the registry
+        env:
+          HOST: ${{ steps.reg.outputs.host }}
+          USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "$USERNAME" ]; then
+            printf '%s' "$PASSWORD" | docker login "$HOST" -u "$USERNAME" --password-stdin
+          elif [ "$HOST" = ghcr.io ]; then
+            printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+          else
+            echo "::error::REGISTRY_USERNAME / REGISTRY_PASSWORD secrets are required for $HOST"; exit 1
+          fi
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Signing key (optional)
+        id: key
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+        run: |
+          if [ -n "$COSIGN_PRIVATE_KEY" ]; then
+            install -d -m 0700 "$RUNNER_TEMP/cosign"
+            printf '%s\n' "$COSIGN_PRIVATE_KEY" > "$RUNNER_TEMP/cosign/cosign.key"
+            chmod 0600 "$RUNNER_TEMP/cosign/cosign.key"
+            [ -z "$COSIGN_PUBLIC_KEY" ] || printf '%s\n' "$COSIGN_PUBLIC_KEY" > "$RUNNER_TEMP/cosign/cosign.pub"
+            echo "mode=key" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=keyless" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: release.sh
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          REGISTRY: ${{ steps.reg.outputs.registry }}
+          ALLOW_VULNS: ${{ inputs.allow_vulns && '--allow-vulns' || '' }}
+          KEY_MODE: ${{ steps.key.outputs.mode }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_TLOG: "true"
+          PATCHGATE_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          if [ "$KEY_MODE" = key ]; then
+            export COSIGN_KEY="$RUNNER_TEMP/cosign/cosign.key"
+            [ -f "$RUNNER_TEMP/cosign/cosign.pub" ] && export COSIGN_PUB="$RUNNER_TEMP/cosign/cosign.pub"
+          fi
+          # shellcheck disable=SC2086 # ALLOW_VULNS is empty or one flag
+          bash release/release.sh "$VERSION" --ci-install --push "$REGISTRY" $ALLOW_VULNS
+
+      - name: Keyless signing + SBOM attestations
+        if: steps.key.outputs.mode == 'keyless'
+        env:
+          OUT: release/out/${{ steps.v.outputs.version }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          node -e 'for (const i of require(process.argv[1]).images) if (i.pushed) console.log(i.name + " " + i.pushed)' "$OUT/manifest.json" |
+          while read -r name digest; do
+            cosign sign --yes "$digest"
+            cosign attest --yes --type cyclonedx --predicate "$OUT/sbom/$name-$VERSION.cdx.json" "$digest"
+          done
+          cosign sign-blob --yes --bundle "$OUT/SHA256SUMS.cosign.bundle" "$OUT/SHA256SUMS"
+
+      - name: SBOM attestations (key-based)
+        if: steps.key.outputs.mode == 'key'
+        env:
+          OUT: release/out/${{ steps.v.outputs.version }}
+          VERSION: ${{ steps.v.outputs.version }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          node -e 'for (const i of require(process.argv[1]).images) if (i.pushed) console.log(i.name + " " + i.pushed)' "$OUT/manifest.json" |
+          while read -r name digest; do
+            cosign attest --yes --key "$RUNNER_TEMP/cosign/cosign.key" --type cyclonedx \
+              --predicate "$OUT/sbom/$name-$VERSION.cdx.json" "$digest"
+          done
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUT: release/out/${{ steps.v.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ steps.v.outputs.prerelease }}
+        run: |
+          # Images are in the registry (digests in manifest.json); the tarballs stay out of the release
+          # (size limits) — SHA256SUMS still lists them for offline transfers (`sha256sum -c --ignore-missing`).
+          files=("$OUT"/SHA256SUMS* "$OUT"/manifest.json "$OUT"/release-notes.md "$OUT"/bundles/* "$OUT"/sbom/*.cdx.json "$OUT"/scans/*.summary.json)
+          [ -f "$OUT/cosign.pub" ] && files+=("$OUT/cosign.pub")
+          flags=(--title "PatchGate $TAG" --notes-file "$OUT/release-notes.md" --verify-tag)
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" "${flags[@]}"
+          fi
+
+      - name: Keep scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.v.outputs.version }}-reports
+          path: |
+            release/out/${{ steps.v.outputs.version }}*/scans/
+            release/out/${{ steps.v.outputs.version }}*/manifest.json
+            release/.work/${{ steps.v.outputs.version }}/logs/
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Remove signing key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/cosign"

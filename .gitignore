@@ -1,0 +1,148 @@
+# PatchGate — root ignore rules.
+#
+# Goal: it must be IMPOSSIBLE to commit secrets or bulky artifacts by accident. Rules are deliberately
+# broad (any key/cert, any .env, any "secrets" path) with a short, explicit allow-list of documented,
+# non-secret test fixtures. Nested .gitignore files (deploy/, lab/, patchgate-*) stay in place and only
+# add rules. Verify before every first commit / release:  release/audit-tree.sh  (see docs/RELEASE.md).
+
+# ------------------------------------------------------------------ secrets: keys, certificates, keystores
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.csr
+*.srl
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+*.gpg
+*.age
+*.asc
+*.sig
+id_rsa*
+id_ecdsa*
+id_ed25519*
+cosign.key
+cosign.pub
+*.cosign.key
+# Documented test fixtures (self-signed, localhost-only, used by the connector test suite; listed in
+# docs/RELEASE.md "Secret hygiene"). Nothing else may be negated here.
+!patchgate-connector/test/fixtures/localhost.key
+!patchgate-connector/test/fixtures/localhost.pem
+!patchgate-connector/test/fixtures/test-ca.pem
+
+# ------------------------------------------------------------------ secrets: env files and secret folders
+.env
+.env.*
+*.env
+!.env.example
+!.env.*.example
+!*.env.example
+secrets/
+secrets.*
+**/secrets*/
+deploy/secrets/
+deploy/.env.production
+deploy/backups/
+deploy/tls/*
+!deploy/tls/README.md
+deploy/ca/*
+!deploy/ca/README.md
+# Lab: generated certificates, credentials, provisioning output, per-bank connector state
+lab/**/secrets*
+lab/patchgate/lab-users.json
+lab/patchgate/.sessions.json
+lab/patchgate/repo-data/
+lab/connector/*/etc/
+lab/connector/bank-*/
+lab/sandbox/generated/
+lab/pc-kit/generated/
+lab/tactical/.env
+lab/tactical/provision.json
+lab/certs/out/
+lab/apps/cache/
+lab/siem/received.log
+provision.json
+certs/out/
+# Credential dumps that tools may write next to the code
+*-credentials.json
+*.credentials.json
+lab-users.json
+.sessions.json
+
+# ------------------------------------------------------------------ dependencies and build output
+node_modules/
+.next/
+.next-*/
+.next*/
+out/
+dist/
+build/
+*.tsbuildinfo
+next-env.d.ts
+.turbo/
+.vercel/
+.npm/
+
+# ------------------------------------------------------------------ tests and reports
+coverage/
+test-results/
+playwright-report/
+blob-report/
+e2e/report/
+e2e/screenshots/
+**/e2e*/report/
+*.lcov
+junit*.xml
+
+# ------------------------------------------------------------------ bulky artifacts and package stores
+repo-data/
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.cab
+*.msi
+*.msu
+*.exe
+*.iso
+*.vhd
+*.vhdx
+*.ova
+*.qcow2
+# Release output (images, SBOMs, scans) — published as release assets, never committed
+release/out/
+release/.work/
+
+# ------------------------------------------------------------------ logs, editor and OS noise
+*.log
+*.out
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
+*.swo
+.vscode/*
+!.vscode/extensions.json
+# Local tool state
+.claude/settings.local.json
+.claude-flow/
+.swarm/
+graphify-out/
+
+# Colleague test kit: assembled kit (images, ~700 MB) and run logs / logins
+kits/*/out/
+kits/*/logs/
+kits/**/logins.txt
+
+# Screenshots (Playwright runs; TOTP-enrol shots show lab QR secrets)
+**/screenshots/
