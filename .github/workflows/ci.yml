@@ -45,7 +45,7 @@ jobs:
       run:
         working-directory: patchgate-web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -76,7 +76,7 @@ jobs:
       run:
         working-directory: patchgate-connector
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: PowerShell parse + bash -n + shellcheck
@@ -135,7 +135,7 @@ jobs:
           - { name: patchgate-egress-proxy, context: deploy/egress-proxy, target: "" }
           - { name: patchgate-backup, context: deploy/backup, target: "" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - id: meta
