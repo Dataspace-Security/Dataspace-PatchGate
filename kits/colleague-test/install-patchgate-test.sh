@@ -81,6 +81,20 @@ docker info >/dev/null 2>&1 || die "Docker is not running (start Docker Desktop 
 mem_gb=$(( $(docker info --format '{{.MemTotal}}') / 1024 / 1024 / 1024 ))
 [ "$mem_gb" -ge 11 ] || die "Docker can use only ${mem_gb} GB RAM; 12 GB minimum (16 GB recommended): Docker Desktop -> Settings -> Resources"
 ok "git $(git --version | awk '{print $3}'), Docker $(docker version --format '{{.Server.Version}}'), ${mem_gb} GB RAM for Docker"
+# The Dockerfiles need BuildKit (heredocs, COPY --chmod). Docker Desktop has it; Ubuntu's docker.io package
+# ships without the buildx plugin, so install it there (docker-ce -> docker-buildx-plugin, docker.io -> docker-buildx).
+export DOCKER_BUILDKIT=1
+if ! docker buildx version >/dev/null 2>&1; then
+  if [ "$(id -u)" = 0 ] && command -v apt-get >/dev/null 2>&1; then
+    pkg=docker-buildx; dpkg -s docker-ce >/dev/null 2>&1 && pkg=docker-buildx-plugin
+    echo "    Docker BuildKit (buildx) missing: installing $pkg"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >/dev/null 2>&1 \
+      || { apt-get update -qq >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >/dev/null 2>&1; } \
+      || die "could not install $pkg — install Docker's buildx plugin, then re-run"
+  fi
+  docker buildx version >/dev/null 2>&1 || die "Docker BuildKit (buildx plugin) is required: Ubuntu/Debian 'apt install docker-buildx' (docker.io) or 'docker-buildx-plugin' (docker-ce); Docker Desktop has it"
+fi
+ok "Docker BuildKit $(docker buildx version 2>/dev/null | awk '{print $2}')"
 mkdir -p "$BASE"
 free_gb="$(df -Pk "$BASE" | awk 'NR==2 {printf "%d", $4/1024/1024}')"
 [ "${free_gb:-0}" -ge 10 ] || die "only ${free_gb} GB free in $BASE (the clone + image archives need about 10 GB, Docker another 20 GB)"
