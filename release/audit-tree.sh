@@ -38,10 +38,11 @@ ALL="$SCRATCH/all.txt"
 (cd "$ROOT" && find . \( -name node_modules -o -name '.next*' -o -name .git \) -prune -o \( -type f -o -type l \) -print) \
   | sed 's|^\./||' > "$ALL"
 pruned_not_ignored="$(cd "$ROOT" && find . \( -name node_modules -o -name '.next*' \) -type d -prune -print | sed 's|^\./||; s|$|/x|' \
-  | "${G[@]}" check-ignore --no-index -v -n --stdin | awk -F'\t' '$1 == "::" || $1 ~ /:!/ { sub(/\/x$/, "", $2); print $2 }')"
+  | { "${G[@]}" check-ignore --no-index -v -n --stdin || [ $? -eq 1 ]; } | awk -F'\t' '$1 == "::" || $1 ~ /:!/ { sub(/\/x$/, "", $2); print $2 }')"
+# check-ignore exits 1 when NOTHING is ignored (e.g. a fresh CI checkout): not an error here.
 # check-ignore --no-index applies every .gitignore along each path, also across nested repositories.
 # Not ignored = no matching pattern ("::") or the last matching pattern is a negation ("!…").
-"${G[@]}" check-ignore --no-index -v -n --stdin < "$ALL" \
+{ "${G[@]}" check-ignore --no-index -v -n --stdin < "$ALL" || [ $? -eq 1 ]; } \
   | awk -F'\t' '$1 == "::" || $1 ~ /:!/ { print $2 }' | sort -u > "$FILES"
 COUNT="$(wc -l < "$FILES" | tr -d ' ')"
 NESTED="$(cd "$ROOT" && find . -mindepth 2 -name node_modules -prune -o -name .git -print | sed 's|^\./||; s|/\.git$||')"
