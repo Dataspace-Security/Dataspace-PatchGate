@@ -2,7 +2,7 @@
 # Build:  docker build -t patchgate-connector:1.0.0 .
 # Run:    see docker-compose.example.yml (read_only: true; only /var/lib/patchgate-connector is writable)
 
-FROM node:24-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -11,7 +11,7 @@ COPY scripts ./scripts
 COPY src ./src
 RUN node scripts/build.mjs
 
-FROM node:24-alpine
+FROM node:25-alpine
 # The image contains nothing but node and the bundle (zod is inlined; no node_modules at runtime).
 RUN apk add --no-cache tini \
  && mkdir -p /opt/patchgate-connector /var/lib/patchgate-connector /etc/patchgate-connector \
