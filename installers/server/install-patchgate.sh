@@ -202,6 +202,20 @@ image_ref() { # web|tools|signer|egress-proxy|backup -> full image reference
 # Helper images (signer, egress proxy, backup): the scanned + signed release images in registry mode,
 # built from deploy/ (":local") in build mode.
 helper_ref() { if [ "$IMAGE_SOURCE" = build ]; then echo "patchgate-$1:local"; else image_ref "$1"; fi; }
+# Docker refuses a container CPU limit above the host's CPU count ("range of CPUs is from 0.01 to N").
+# Cap the compose defaults (DB 4, web 2, fetcher 2) to this host unless the admin set a value.
+fit_cpu_limits() {
+  local n var def cur
+  n="$(nproc)"
+  for var in DB_CPUS:4 WEB_CPUS:2 FETCHER_CPUS:2; do
+    def="${var#*:}"; var="${var%%:*}"
+    cur="$(env_get "$var")"
+    if [ -z "$cur" ] && [ "$def" -gt "$n" ]; then
+      env_set "$var" "$n"
+      info "$var=$n (this host has $n CPUs; compose default $def)"
+    fi
+  done
+}
 set_image_env() {
   env_set PATCHGATE_IMAGE "$(image_ref web)"
   env_set PATCHGATE_TOOLS_IMAGE "$(image_ref tools)"
@@ -465,6 +479,7 @@ write_env() {
     fresh=1
   fi
   set_image_env
+  fit_cpu_limits
   if [ "$fresh" = 1 ]; then
     env_set PATCHGATE_HOSTNAME "$DOMAIN"
     env_set PUBLIC_BASE_URL "https://$DOMAIN"
@@ -774,6 +789,7 @@ do_upgrade() {
     confirm "Backup FAILED. Continue the upgrade anyway?" n || die "upgrade aborted before any change (fix the backup first)"
   fi
   set_image_env
+  fit_cpu_limits
   save_state
   step "Migrate"
   run_migrate || die "migration failed — previous images still running; restore if needed (RUNBOOK §10)"
