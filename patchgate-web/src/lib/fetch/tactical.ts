@@ -9,7 +9,7 @@ import { appendAudit } from "@/lib/audit/service";
 import { DomainError } from "@/lib/errors";
 import { safeDownload, safeFetchJson } from "./http";
 import { discardTemp, newTempFile, pendingAbs, publishFile, repoAbsPath } from "./repo";
-import { verifyAuthenticode } from "./signature";
+import { codesignOptions, verifyAuthenticode } from "./signature";
 import { compareVersions } from "@/lib/thirdparty/version";
 import { hasAllAgentArches } from "@/lib/thirdparty/package-from-db";
 
@@ -81,7 +81,7 @@ async function mirrorOne(item: MirrorItem): Promise<string> {
       verification = "REJECTED";
       reason = `sha256 mismatch (GitHub ${item.expectedSha256}, got ${dl.sha256})`;
     } else if (item.signedBy && item.expectedSha256) {
-      const sig = await verifyAuthenticode(tmp, item.signedBy, { codesignCaFile: e.CODESIGN_CA_FILE });
+      const sig = await verifyAuthenticode(tmp, item.signedBy, codesignOptions(e));
       if (sig.ok) {
         verification = "VERIFIED";
         reason = null;

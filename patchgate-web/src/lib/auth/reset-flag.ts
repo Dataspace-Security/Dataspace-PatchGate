@@ -30,29 +30,3 @@ export async function credentialResetSinceLastLogin(user: { id: string; tenantId
     });
   return user.tenantId ? withTenant(user.tenantId, read) : withPlatform(read);
 }
-
-/** How long after a BANK admin reset a bank admin may not promote that user to approver / admin. */
-export const PROMOTION_COOLDOWN_DAYS = 30;
-
-/**
- * Did a bank administrator (not platform staff) reset this user's credentials recently? Closes the
- * "demote approver → reset (learn the password) → promote back" path around the reset restriction.
- */
-export async function recentBankAdminReset(user: { id: string; tenantId: string | null }, now = new Date()): Promise<boolean> {
-  if (!user.tenantId) return false;
-  const since = new Date(now.getTime() - PROMOTION_COOLDOWN_DAYS * 86_400_000);
-  const hit = await withTenant(user.tenantId, (tx) =>
-    tx.auditEvent.findFirst({
-      where: {
-        tenantId: user.tenantId,
-        entity: "User",
-        entityId: user.id,
-        action: { in: [...RESET_ACTIONS] },
-        ts: { gt: since },
-        payload: { path: ["byPlatformAdmin"], equals: false },
-      },
-      select: { seq: true },
-    }),
-  );
-  return hit !== null;
-}

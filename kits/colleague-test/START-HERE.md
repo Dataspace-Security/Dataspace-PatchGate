@@ -13,9 +13,37 @@ PatchGate repository.
   download.docker.com are used).
 - Administrator rights **once**, to add one line to the hosts file.
 
-## The 3 commands
+## Option A: from GitHub (recommended)
 
-Open **Git Bash** (Windows) or a terminal (Linux) in this folder, then:
+One script clones the private repository, **builds PatchGate from source** on your PC and installs everything.
+You need access to `Dataspace-Security/Dataspace-PatchGate`: either the GitHub CLI signed in (`gh auth login`),
+or a read-only fine-grained token (Repository access: that repo; Permissions: Contents = Read).
+
+```bash
+# in Git Bash (Windows) or a terminal (Linux), in an empty folder:
+gh api -H "Accept: application/vnd.github.raw" \
+  "repos/Dataspace-Security/Dataspace-PatchGate/contents/kits/colleague-test/install-patchgate-test.sh?ref=main" \
+  > install-patchgate-test.sh
+bash install-patchgate-test.sh            # clone -> build images -> install (60-120 minutes the first time)
+```
+
+Without the GitHub CLI (the token is typed, not shown; the script asks for it again for the clone):
+
+```bash
+read -rs GH_TOKEN && curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/Dataspace-Security/Dataspace-PatchGate/contents/kits/colleague-test/install-patchgate-test.sh?ref=main" \
+  -o install-patchgate-test.sh; unset GH_TOKEN
+bash install-patchgate-test.sh
+```
+
+Later: `bash install-patchgate-test.sh --status`, `--code approver`, `--reinstall` (erase + install fresh),
+`--cleanup`. Options: `--ref <branch|tag|commit>` (default `main`), `--dir <folder>` (default `~/patchgate-test`).
+The clone, build logs and the kit (with `logins.txt`) live under `~/patchgate-test/`.
+
+## Option B: offline kit folder (someone gave you `PatchGate-<version>-test-kit`)
+
+Uses the release images inside the folder (no build). Open **Git Bash** (Windows) or a terminal (Linux) in that
+folder, then:
 
 ```bash
 ./test-on-my-pc.sh            # 1. installs everything (30-90 minutes, mostly downloads)

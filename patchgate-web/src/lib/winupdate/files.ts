@@ -10,7 +10,7 @@ import { appendAudit } from "@/lib/audit/service";
 import { orgMatches } from "@/lib/fetch/dn";
 import { safeDownload } from "@/lib/fetch/http";
 import { discardTemp, newTempFile, publishFile, realRepoFile, repoAbsPath } from "@/lib/fetch/repo";
-import { readAuthenticode, type SignatureResult } from "@/lib/fetch/signature";
+import { codesignOptions, readAuthenticode, type SignatureResult } from "@/lib/fetch/signature";
 import { errText } from "./cab";
 import { FETCH_HOSTS, MICROSOFT_PUBLISHER, normalizeUpdateUrl, updateFileRepoPath } from "./microsoft";
 import { checkRepoQuota } from "./quota";
@@ -46,7 +46,7 @@ export function defaultFileDeps(): FileDeps {
   return {
     download: (url, dest, maxBytes) =>
       safeDownload(url, dest, { allowedHosts: FETCH_HOSTS, redirects: "allowlist", timeoutMs: e.FETCH_TIMEOUT_MS, maxBytes: Math.min(maxBytes, WU_MAX_FILE_BYTES) }),
-    readSignature: (path) => readAuthenticode(path, { codesignCaFile: e.CODESIGN_CA_FILE }),
+    readSignature: (path) => readAuthenticode(path, codesignOptions(e)),
   };
 }
 

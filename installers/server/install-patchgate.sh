@@ -689,7 +689,10 @@ run_smoke() {
   local ca="" internal=0 rc=0
   [ -s "$DEPLOY/tls/selfsigned-ca.pem" ] && ca="tls/selfsigned-ca.pem"
   [ "$FIREWALL_APPLIED" = 1 ] && internal=1
-  (cd "$DEPLOY" && CA_FILE="$ca" INTERNAL="$internal" ./scripts/smoke-test.sh "https://$DOMAIN") | sed 's/^/    /' || rc=${PIPESTATUS[0]}
+  # SMOKE_WAIT_SIEM: right after start the first audit export has not run yet (siemExport=false until the
+  # scheduler's first tick); wait up to 3 min for it instead of reporting a false failure. With the
+  # placeholder SIEM (no --siem-url) smoke-test.sh reports a WARN instead (warned about above).
+  (cd "$DEPLOY" && CA_FILE="$ca" INTERNAL="$internal" SMOKE_WAIT_SIEM=180 ./scripts/smoke-test.sh "https://$DOMAIN") | sed 's/^/    /' || rc=${PIPESTATUS[0]}
   if [ "$rc" = 0 ]; then SMOKE_RESULT="PASS"; ok "smoke test PASS"; else SMOKE_RESULT="FAIL ($rc checks)"; warn "smoke test: $rc check(s) failed (see above)"; fi
   [ "$internal" = 1 ] || info "(internal isolation checks run once the firewall rules are applied: INTERNAL=1 ./scripts/smoke-test.sh)"
 }

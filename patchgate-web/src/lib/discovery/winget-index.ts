@@ -1,13 +1,13 @@
 import "server-only";
 import { createWriteStream } from "node:fs";
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { DatabaseSync } from "node:sqlite";
 import yauzl from "yauzl";
 import { safeDownload } from "@/lib/fetch/http";
 import { discardTemp, newTempFile } from "@/lib/fetch/repo";
-import { verifyAuthenticode } from "@/lib/fetch/signature";
+import { filterCaBundle, isRootOf, verifyAuthenticode, type AuthenticodeOptions, type SignatureResult } from "@/lib/fetch/signature";
 import { MAX_NAME_CANDIDATES, type CatalogLookup } from "./match";
 
 /**
@@ -18,7 +18,8 @@ import { MAX_NAME_CANDIDATES, type CatalogLookup } from "./match";
 
 export const WINGET_INDEX_URL = "https://cdn.winget.microsoft.com/cache/source.msix";
 const WINGET_INDEX_HOSTS = ["cdn.winget.microsoft.com"];
-const INDEX_SIGNER = "O=Microsoft Corporation";
+const INDEX_ROOT_ORG = "Microsoft Corporation";
+const INDEX_SIGNER = `O=${INDEX_ROOT_ORG}`;
 const MAX_MSIX_BYTES = 200 * 1024 * 1024;
 const MAX_DB_BYTES = 600 * 1024 * 1024;
 const ENTRY = "Public/index.db";
@@ -26,6 +27,29 @@ const CATALOG_DIR = ".catalog"; // beside the served roots; not servable (leadin
 
 export function indexPath(repoDir: string): string {
   return resolve(repoDir, CATALOG_DIR, "winget-index.db");
+}
+
+/**
+ * Verify the index package: Authenticode (APPX) signature valid, signer organisation pinned to
+ * "Microsoft Corporation", and — on Linux — signing chain AND timestamp chain anchored ONLY in the
+ * self-signed Microsoft roots of CODESIGN_CA_FILE (other vendors' roots in the bundle are not trusted
+ * for this file). Real chain (2026): Microsoft Corporation ← Microsoft Marketplace CA G 0xx ←
+ * Microsoft MarketPlace PCA 2011 ← Microsoft Root Certificate Authority 2011; timestamp ← Microsoft
+ * Time-Stamp PCA 2010 ← Microsoft Root Certificate Authority 2010. The leaf carries Microsoft's
+ * critical Application Policies extension (osslsigncode is patched to accept it — Dockerfile).
+ * `scratch` = path for the temporary Microsoft-only CA bundle (removed afterwards).
+ */
+export async function verifyIndexSignature(msix: string, opts: { codesign?: AuthenticodeOptions; scratch: string }): Promise<SignatureResult> {
+  const codesign = opts.codesign ?? {};
+  if (process.platform === "win32" || !codesign.codesignCaFile) return verifyAuthenticode(msix, INDEX_SIGNER, codesign);
+  const roots = filterCaBundle(await readFile(codesign.codesignCaFile, "utf8"), isRootOf(INDEX_ROOT_ORG));
+  if (roots.count === 0) return { ok: false, reason: "CODESIGN_CA_FILE contains no Microsoft root CA (RUNBOOK §4.4)" };
+  await writeFile(opts.scratch, roots.pem, { flag: "wx", mode: 0o600 });
+  try {
+    return await verifyAuthenticode(msix, INDEX_SIGNER, { ...codesign, codesignCaFile: opts.scratch, tsaCaFile: opts.scratch });
+  } finally {
+    await rm(opts.scratch, { force: true });
+  }
 }
 
 /** Extract one entry from a zip (msix) with a hard size cap. */
@@ -71,13 +95,13 @@ export interface IndexRefreshResult {
 }
 
 /** Download + verify (Microsoft signature) + extract + validate + atomically replace the index. */
-export async function refreshWingetIndex(opts: { repoDir: string; timeoutMs: number; codesignCaFile?: string }): Promise<IndexRefreshResult> {
+export async function refreshWingetIndex(opts: { repoDir: string; timeoutMs: number; codesign?: AuthenticodeOptions }): Promise<IndexRefreshResult> {
   // Windows picks the signature format (SIP) by extension: an extensionless MSIX reads as "UnknownError".
   const msix = `${await newTempFile(opts.repoDir)}.msix`;
   const db = await newTempFile(opts.repoDir);
   try {
     await safeDownload(WINGET_INDEX_URL, msix, { allowedHosts: WINGET_INDEX_HOSTS, timeoutMs: opts.timeoutMs, maxBytes: MAX_MSIX_BYTES });
-    const sig = await verifyAuthenticode(msix, INDEX_SIGNER, { codesignCaFile: opts.codesignCaFile });
+    const sig = await verifyIndexSignature(msix, { codesign: opts.codesign, scratch: `${db}.roots.pem` });
     if (!sig.ok) throw new Error(`catalog index signature: ${sig.reason}`);
     await extractEntry(msix, ENTRY, db, MAX_DB_BYTES);
     const packages = assertIndexShape(db);

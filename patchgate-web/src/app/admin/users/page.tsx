@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { canResetCredentials, listTenants, listUsers } from "@/lib/auth/admin-service";
+import { listTenants, listUsers } from "@/lib/auth/admin-service";
 import { Alert, Badge, EmptyState, Loading, PageHeader, fmtDate, rowCls, tableCls, tableWrapCls, theadCls } from "@/components/ui";
 import { AdminTabs, ROLE_LABEL, getAdminUser } from "../admin-guard";
 import { CreateUserForm, UserActions } from "./user-admin";
@@ -8,6 +8,8 @@ async function UsersTable() {
   const { user: actor, denied, readOnly } = await getAdminUser();
   if (denied) return denied;
   const platform = actor.tenantId === null;
+  // Only a platform admin manages accounts; bank admins / auditors and platform auditors only see the list.
+  const manage = platform && !readOnly;
   const [users, tenants] = await Promise.all([listUsers(actor), listTenants(actor)]);
   const now = new Date();
   const bankOptions = tenants.map((t) => ({ id: t.id, name: t.name, active: t.active }));
@@ -19,15 +21,17 @@ async function UsersTable() {
         description={
           platform
             ? "Every PatchGate account — our team and all banks. New users get a one-time temporary password and set up an authenticator at first sign-in."
-            : "Accounts of your bank. New users get a one-time temporary password and set up an authenticator at first sign-in."
+            : "Accounts of your bank (read-only)."
         }
       />
       <AdminTabs active="users" platform={platform} />
       <div className="space-y-6">
-        {readOnly ? (
-          <Alert tone="info">Read-only view (auditor): you can see every account in your scope but cannot change anything.</Alert>
+        {!platform ? (
+          <Alert tone="info">Accounts for your bank are created and managed by PatchGate (contact your PatchGate administrator).</Alert>
+        ) : readOnly ? (
+          <Alert tone="info">Read-only view (auditor): you can see every account but cannot change anything.</Alert>
         ) : (
-          <CreateUserForm platform={platform} banks={bankOptions} ownBankName={platform ? null : (tenants[0]?.name ?? null)} />
+          <CreateUserForm banks={bankOptions} />
         )}
         {users.length === 0 ? (
           <EmptyState title="No users yet" />
@@ -41,7 +45,7 @@ async function UsersTable() {
                   <th>Role</th>
                   <th>Status</th>
                   <th>Last sign-in</th>
-                  {!readOnly && <th className="text-right">Actions</th>}
+                  {manage && <th className="text-right">Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -69,14 +73,9 @@ async function UsersTable() {
                         </div>
                       </td>
                       <td className="whitespace-nowrap text-xs text-muted">{fmtDate(u.lastLoginAt)}</td>
-                      {!readOnly && (
+                      {manage && (
                         <td className="text-right">
-                          <UserActions
-                            user={{ id: u.id, upn: u.upn, name: u.name, role: u.role, active: u.active, locked }}
-                            self={self}
-                            platform={platform}
-                            canResetCredentials={canResetCredentials(platform ? "platform" : "bank", "reset-password", u.role)}
-                          />
+                          <UserActions user={{ id: u.id, upn: u.upn, name: u.name, role: u.role, active: u.active, locked }} self={self} bankUser={u.tenantId !== null} />
                         </td>
                       )}
                     </tr>

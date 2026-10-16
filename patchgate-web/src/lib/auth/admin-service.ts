@@ -8,7 +8,6 @@ import { DomainError } from "@/lib/errors";
 import { appendAudit } from "@/lib/audit/service";
 import { withTenant } from "@/lib/tenancy/db";
 import { auditAuth } from "./audit";
-import { PROMOTION_COOLDOWN_DAYS, recentBankAdminReset } from "./reset-flag";
 import { generateTempPassword, hashPassword } from "./password";
 import { revokeUserSessions } from "./session-store";
 import { ACTIVE_ROLES, canRead } from "./roles";
@@ -16,11 +15,14 @@ import { AuthError, type SessionUser } from "./session";
 
 /**
  * User and bank administration.
- * - Platform admin (role ADMIN, tenantId null): all banks, all users (bank users and our team).
- * - Bank admin (role ADMIN, tenantId set): users of their own bank only; never platform users,
- *   never another bank, never moves a user between banks (a user's bank is fixed at creation).
- * - Auditors (role AUDITOR) READ the same lists in their scope (platform: everything; bank: own bank) and
- *   change nothing. Roles: ADMIN / AUDITOR only (lib/auth/roles.ts; DB CHECK User_role_scope).
+ * - Accounts are created and managed ONLY by a platform admin (role ADMIN, tenantId null = our team):
+ *   create, edit name / role / active, reset password or MFA, unlock - for our team and every bank.
+ *   A user's bank is fixed at creation.
+ * - Nobody from a bank (bank ADMIN or AUDITOR) changes any account; they only READ their own bank's users.
+ *   (A bank admin who could create a second admin and learn its temporary password could approve their own
+ *   change request: maker-checker needs accounts to be issued outside the bank.)
+ * - Platform auditors READ everything and change nothing. Roles: ADMIN / AUDITOR only (lib/auth/roles.ts;
+ *   DB CHECK User_role_scope).
  * Guards: nobody deactivates or demotes themselves; at least one active platform admin remains.
  * Every change is audited (bank users on their bank's chain, platform users / banks on the platform chain).
  */
@@ -48,10 +50,11 @@ export function requirePlatformAdmin(actor: SessionUser): void {
   if (requireAdmin(actor) !== "platform") throw new AuthError("Platform administrator role required", 403);
 }
 
-/** Can `actor` manage a user that belongs to `targetTenantId` (null = our team)? */
-export function canManageTenantUsers(actor: Pick<SessionUser, "role" | "tenantId">, targetTenantId: string | null): boolean {
-  if (actor.role !== "ADMIN") return false;
-  return actor.tenantId === null || actor.tenantId === targetTenantId;
+export const ACCOUNTS_MANAGED_BY_PLATFORM = "Accounts are managed by PatchGate platform administrators";
+
+/** Only a platform admin may create or change user accounts (bank admins and all auditors: 403). */
+export function requireAccountManager(actor: Pick<SessionUser, "role" | "tenantId">): void {
+  if (actor.role !== "ADMIN" || actor.tenantId !== null) throw new AuthError(ACCOUNTS_MANAGED_BY_PLATFORM, 403);
 }
 
 // ---------- Schemas ----------
@@ -71,7 +74,7 @@ export const createUserSchema = z.object({
   upn: upnSchema,
   name: nameSchema,
   role: roleSchema,
-  /** null = our team (platform staff). Bank admins may omit it (defaults to their bank). */
+  /** null = our team (platform staff); otherwise the bank the user belongs to. Required. */
   tenantId: z.string().min(1).max(64).nullable().optional(),
 });
 
@@ -180,10 +183,9 @@ export async function listTenants(actor: SessionUser) {
 
 // ---------- Users ----------
 
-async function loadManagedUser(tx: Tx, actor: SessionUser, userId: string): Promise<UserRow> {
+async function loadUser(tx: Tx, userId: string): Promise<UserRow> {
   const u = await tx.user.findUnique({ where: { id: userId }, select: userSelect });
-  // A bank admin gets the same answer for "other bank" and "does not exist" (no cross-bank probing).
-  if (!u || !canManageTenantUsers(actor, u.tenantId)) throw new DomainError("User not found", 404);
+  if (!u) throw new DomainError("User not found", 404);
   return u;
 }
 
@@ -205,18 +207,10 @@ export interface CreatedUser {
 }
 
 export async function createUser(actor: SessionUser, raw: z.input<typeof createUserSchema>): Promise<CreatedUser> {
-  const scope = requireAdmin(actor);
+  requireAccountManager(actor);
   const input = createUserSchema.parse(raw); // idempotent; normalises the UPN for non-HTTP callers too
-  let tenantId: string | null;
-  if (scope === "bank") {
-    if (input.tenantId !== undefined && input.tenantId !== actor.tenantId) {
-      throw new AuthError("Bank administrators can only create users of their own bank", 403);
-    }
-    tenantId = actor.tenantId;
-  } else {
-    if (input.tenantId === undefined) throw new DomainError("Choose a bank, or our team", 400);
-    tenantId = input.tenantId;
-  }
+  if (input.tenantId === undefined) throw new DomainError("Choose a bank, or our team", 400);
+  const tenantId = input.tenantId;
 
   const temporaryPassword = generateTempPassword();
   const passwordHash = await hashPassword(temporaryPassword);
@@ -244,20 +238,14 @@ export async function createUser(actor: SessionUser, raw: z.input<typeof createU
 }
 
 export async function updateUser(actor: SessionUser, userId: string, input: z.infer<typeof updateUserSchema>): Promise<AdminUserView> {
-  requireAdmin(actor);
+  requireAccountManager(actor);
   const self = userId === actor.id;
   if (self && input.active === false) throw new DomainError("You cannot deactivate your own account.", 409);
   if (self && input.role !== undefined && input.role !== "ADMIN") throw new DomainError("You cannot remove your own administrator role.", 409);
-  if (requireAdmin(actor) === "bank" && input.role !== undefined && PRIVILEGED_ROLES.includes(input.role)) {
-    const target = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, tenantId: true, role: true } });
-    if (target && canManageTenantUsers(actor, target.tenantId) && !PRIVILEGED_ROLES.includes(target.role) && (await recentBankAdminReset(target))) {
-      throw new AuthError(`This user's credentials were reset by a bank administrator in the last ${PROMOTION_COOLDOWN_DAYS} days; a PatchGate platform administrator must grant the admin role.`, 403);
-    }
-  }
 
   return authTx(async (tx) => {
     await lockAdmins(tx);
-    const before = await loadManagedUser(tx, actor, userId);
+    const before = await loadUser(tx, userId);
     const deactivating = input.active === false && before.active;
     const demoting = input.role !== undefined && input.role !== "ADMIN" && before.role === "ADMIN";
     if (deactivating || demoting) await assertNotLastPlatformAdmin(tx, before);
@@ -284,42 +272,14 @@ export async function updateUser(actor: SessionUser, userId: string, input: z.in
 
 export type UserAction = z.infer<typeof userActionSchema>["action"];
 
-/** Roles whose credentials a BANK admin may not reset (maker-checker: the admin would learn them). */
-export const PRIVILEGED_ROLES: readonly UserRole[] = ["ADMIN"];
-
-/**
- * May `scope` reset the credentials (password / authenticator) of a user with role `targetRole`?
- * Bank admins are the bank's checkers: one who resets ANOTHER bank admin learns the temporary password,
- * enrols their own authenticator and can then act as maker AND checker. So bank admins reset only AUDITOR
- * credentials; resetting an admin needs a PatchGate platform administrator (audited on the bank's chain).
- * Unlock reveals nothing and stays with the bank admin.
- */
-export function canResetCredentials(scope: AdminScope, action: UserAction, targetRole: UserRole): boolean {
-  if (action === "unlock" || scope === "platform") return true;
-  return !PRIVILEGED_ROLES.includes(targetRole);
-}
-
 /** Reset password (new one-time temporary password), reset MFA (re-enrol at next sign-in) or unlock. */
 export async function userAction(actor: SessionUser, userId: string, action: UserAction): Promise<{ user: AdminUserView; temporaryPassword: string | null }> {
-  const scope = requireAdmin(actor);
+  requireAccountManager(actor);
   const temporaryPassword = action === "reset-password" ? generateTempPassword() : null;
   const passwordHash = temporaryPassword ? await hashPassword(temporaryPassword) : null;
 
-  const denied = await authTx(async (tx) => {
-    const target = await loadManagedUser(tx, actor, userId);
-    if (canResetCredentials(scope, action, target.role)) return null;
-    // Audited on the bank's chain (the bank SIEM sees the attempt), then refused.
-    await auditAuth(
-      { actor: actor.upn, action: "user.reset_denied", entity: "User", entityId: userId, payload: { upn: target.upn, targetRole: target.role, requested: action, reason: "admin credentials need a platform administrator" }, tenantId: target.tenantId },
-      tx,
-    );
-    return target.role;
-  });
-  if (denied) throw new AuthError(`Resetting the credentials of an ${denied.toLowerCase()} requires a PatchGate platform administrator.`, 403);
-
   return authTx(async (tx) => {
-    const target = await loadManagedUser(tx, actor, userId);
-    if (!canResetCredentials(scope, action, target.role)) throw new DomainError("Role changed concurrently; try again.", 409);
+    const target = await loadUser(tx, userId);
     const data: Prisma.UserUpdateInput =
       action === "reset-password"
         ? { passwordHash, passwordChangedAt: new Date(), mustChangePassword: true, failedLogins: 0, lockedUntil: null }
@@ -336,7 +296,7 @@ export async function userAction(actor: SessionUser, userId: string, action: Use
         action: auditAction,
         entity: "User",
         entityId: userId,
-        payload: { upn: target.upn, targetRole: target.role, sessionsRevoked: killed, byPlatformAdmin: scope === "platform", nextLoginFlagged: action !== "unlock" },
+        payload: { upn: target.upn, targetRole: target.role, sessionsRevoked: killed, nextLoginFlagged: action !== "unlock" },
         tenantId: target.tenantId,
       },
       tx,

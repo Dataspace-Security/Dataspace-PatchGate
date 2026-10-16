@@ -19,14 +19,20 @@ ARG NODE_IMAGE=node:24-trixie-slim
 # ---------------------------------------------------------------- osslsigncode: built from a pinned release
 # Debian ships 2.9 (CVE-2025-70888, fixed upstream after 2.10). Built without cURL: PatchGate only VERIFIES
 # Authenticode signatures (no timestamping requests), so the runtime needs just libssl + zlib.
+# docker/osslsigncode/*.patch: accept Microsoft's critical "Application Policies" extension (OID
+# 1.3.6.1.4.1.311.21.10, unknown to OpenSSL). Without it every Microsoft Store/Marketplace-signed file
+# (e.g. the winget source.msix) fails with "unhandled critical extension". Any OTHER unknown critical
+# extension still fails. Re-check the patch applies (--fuzz=0) when bumping OSSLSIGNCODE_VERSION.
 FROM ${NODE_IMAGE} AS osslsigncode
 ARG OSSLSIGNCODE_VERSION=2.14
 ARG OSSLSIGNCODE_SHA256=0f033fd6069387d2e489fbd2187e62f624764eb8c2758ee94e3e793e5150b5c5
+COPY docker/osslsigncode/ /tmp/patches/
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl build-essential cmake libssl-dev zlib1g-dev \
+ && apt-get install -y --no-install-recommends ca-certificates curl build-essential cmake libssl-dev zlib1g-dev patch \
  && curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/src.tar.gz "https://github.com/mtrojnar/osslsigncode/archive/refs/tags/${OSSLSIGNCODE_VERSION}.tar.gz" \
  && echo "${OSSLSIGNCODE_SHA256}  /tmp/src.tar.gz" | sha256sum -c - \
  && mkdir /src && tar -C /src --strip-components=1 -xzf /tmp/src.tar.gz \
+ && for p in /tmp/patches/*.patch; do patch -p1 --forward --fuzz=0 -d /src < "$p" || exit 1; done \
  && cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release -DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON \
  && cmake --build /build -j"$(nproc)" \
  && install -m 0755 /build/osslsigncode /usr/local/bin/osslsigncode \

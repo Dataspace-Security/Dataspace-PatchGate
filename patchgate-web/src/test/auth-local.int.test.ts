@@ -9,7 +9,8 @@ configureTestEnv({ AUTH_MODE: "local", AUTH_ENC_KEY: "ab".repeat(32) });
 
 const { prisma } = await import("@/lib/db");
 const { beginPasswordLogin, verifyTotpStep, changePasswordStep, LOGIN_ERROR, CODE_ERROR, RESTART_ERROR } = await import("@/lib/auth/local-login");
-const { createUser, updateUser, userAction, createTenant, updateTenant, listUsers } = await import("@/lib/auth/admin-service");
+const { createUser, updateUser, userAction, createTenant, updateTenant, listUsers, ACCOUNTS_MANAGED_BY_PLATFORM } = await import("@/lib/auth/admin-service");
+const { verifyAuditLog } = await import("@/lib/audit/service");
 const { hashPassword } = await import("@/lib/auth/password");
 const { base32Decode, hotp, totpStep } = await import("@/lib/auth/totp");
 const { sha256Hex } = await import("@/lib/auth/tokens");
@@ -187,39 +188,63 @@ describe("user administration", () => {
     return { root, a, b, bankAdmin: asActor(adminA), userB };
   }
 
-  it("a bank admin manages only their own bank's users", async () => {
+  it("nobody from a bank changes any account (403); bank admins and auditors read their own bank's list", async () => {
     const { root, a, b, bankAdmin, userB } = await twoBanks();
+    const own = await createUser(root, { upn: "teller@bank-a.test", name: "Teller", role: "AUDITOR", tenantId: a.id });
+    const bankAuditor = { ...bankAdmin, role: "AUDITOR" as const };
+    const before = await prisma.user.findMany({ orderBy: { upn: "asc" } });
 
-    // Creating: forced into their own bank; never a platform user or another bank's user.
-    const own = await createUser(bankAdmin, { upn: "teller@bank-a.test", name: "Teller", role: "AUDITOR" });
-    expect(own.user.tenantId).toBe(a.id);
-    await expect(createUser(bankAdmin, { upn: "x@platform.test", name: "X", role: "ADMIN", tenantId: null })).rejects.toBeInstanceOf(AuthError);
-    await expect(createUser(bankAdmin, { upn: "y@bank-b.test", name: "Y", role: "AUDITOR", tenantId: b.id })).rejects.toBeInstanceOf(AuthError);
-
-    // Other bank / platform users are invisible and untouchable.
-    for (const target of [userB.id, root.id]) {
-      await expect(updateUser(bankAdmin, target, { active: false })).rejects.toMatchObject({ status: 404 });
-      await expect(userAction(bankAdmin, target, "reset-password")).rejects.toBeInstanceOf(DomainError);
-      await expect(userAction(bankAdmin, target, "reset-mfa")).rejects.toMatchObject({ status: 404 });
+    for (const actor of [bankAdmin, bankAuditor]) {
+      // Creating: never, not even in their own bank (a second admin would defeat maker-checker).
+      for (const tenantId of [undefined, a.id, null, b.id]) {
+        for (const role of ["ADMIN", "AUDITOR"] as const) {
+          await expect(createUser(actor, { upn: `n-${role}@bank-a.test`, name: "N", role, tenantId })).rejects.toMatchObject({ status: 403, message: ACCOUNTS_MANAGED_BY_PLATFORM });
+        }
+      }
+      // Editing / resetting / unlocking: never — own bank, other bank, platform, or themselves.
+      for (const target of [own.user.id, bankAdmin.id, userB.id, root.id]) {
+        for (const change of [{ name: "Renamed" }, { role: "ADMIN" as const }, { role: "AUDITOR" as const }, { active: false }, { active: true }]) {
+          await expect(updateUser(actor, target, change)).rejects.toMatchObject({ status: 403 });
+        }
+        for (const action of ["reset-password", "reset-mfa", "unlock"] as const) {
+          await expect(userAction(actor, target, action)).rejects.toMatchObject({ status: 403, message: ACCOUNTS_MANAGED_BY_PLATFORM });
+        }
+      }
+      // Read-only: their own bank's users only.
+      expect((await listUsers(actor)).map((u) => u.upn).sort()).toEqual(["admin@bank-a.test", "teller@bank-a.test"]);
     }
-    const visible = await listUsers(bankAdmin);
-    expect(visible.map((u) => u.upn).sort()).toEqual(["admin@bank-a.test", "teller@bank-a.test"]);
+    expect(await prisma.user.findMany({ orderBy: { upn: "asc" } })).toEqual(before); // nothing changed
+    await expect(listUsers({ ...bankAdmin, role: "VIEWER" })).rejects.toMatchObject({ status: 403 });
 
     // Banks are platform-only.
     await expect(createTenant(bankAdmin, { slug: "bank-c", name: "Bank C", active: true, requireBankApproval: true })).rejects.toBeInstanceOf(AuthError);
     await expect(updateTenant(bankAdmin, a.id, { active: false })).rejects.toBeInstanceOf(AuthError);
+  });
 
-    // Auditors see their bank's users (read-only) but cannot administer; retired roles see nothing.
-    expect((await listUsers({ ...bankAdmin, role: "AUDITOR" })).map((u) => u.upn).sort()).toEqual(["admin@bank-a.test", "teller@bank-a.test"]);
-    await expect(createUser({ ...bankAdmin, role: "AUDITOR" }, { upn: "z@bank-a.test", name: "Z", role: "AUDITOR" })).rejects.toMatchObject({ status: 403 });
-    await expect(userAction({ ...bankAdmin, role: "AUDITOR" }, own.user.id, "reset-password")).rejects.toMatchObject({ status: 403 });
-    await expect(listUsers({ ...bankAdmin, role: "VIEWER" })).rejects.toMatchObject({ status: 403 });
+  it("a platform admin does every account operation for bank users, audited on the bank's chain", async () => {
+    const { root, a, bankAdmin } = await twoBanks();
+    const created = await createUser(root, { upn: "admin2@bank-a.test", name: "Admin 2", role: "ADMIN", tenantId: a.id });
+    expect(created.user.tenantId).toBe(a.id);
+    await expect(createUser(root, { upn: "nobank@bank-a.test", name: "No bank", role: "AUDITOR" })).rejects.toBeInstanceOf(DomainError); // bank must be chosen
 
-    // In-bank management works and is audited on the bank's chain.
-    const reset = await userAction(bankAdmin, own.user.id, "reset-password");
+    await updateUser(root, bankAdmin.id, { name: "Admin A (renamed)" });
+    await updateUser(root, bankAdmin.id, { role: "AUDITOR" });
+    await updateUser(root, bankAdmin.id, { role: "ADMIN" }); // no cooldown: platform admins decide
+    await prisma.user.update({ where: { id: bankAdmin.id }, data: { lockedUntil: new Date(Date.now() + 600_000), failedLogins: 5 } });
+    await userAction(root, bankAdmin.id, "unlock");
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: bankAdmin.id } })).toMatchObject({ lockedUntil: null, failedLogins: 0 });
+    const reset = await userAction(root, bankAdmin.id, "reset-password");
     expect(reset.temporaryPassword).toMatch(/^[A-Za-z2-9]{5}(-[A-Za-z2-9]{5}){3}$/);
-    const ev = await prisma.auditEvent.findFirstOrThrow({ where: { action: "user.password_reset" } });
-    expect(ev.tenantId).toBe(a.id);
+    await userAction(root, bankAdmin.id, "reset-mfa");
+    await updateUser(root, bankAdmin.id, { active: false });
+    await updateUser(root, bankAdmin.id, { active: true });
+
+    const events = await prisma.auditEvent.findMany({ where: { entity: "User", entityId: { in: [bankAdmin.id, created.user.id] } }, orderBy: { seq: "asc" } });
+    expect(events.map((e) => e.action)).toEqual(
+      expect.arrayContaining(["user.created", "user.updated", "user.unlocked", "user.password_reset", "user.mfa_reset", "user.deactivated", "user.reactivated"]),
+    );
+    expect(events.every((e) => e.tenantId === a.id && e.actor === root.upn)).toBe(true);
+    expect((await verifyAuditLog(a.id)).valid).toBe(true);
   });
 
   it("nobody can deactivate or demote themselves; the last active platform admin is kept", async () => {

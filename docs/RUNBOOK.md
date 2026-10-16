@@ -155,15 +155,18 @@ Settings for notifications, monitoring and the one-line site install:
 
 | Role | Platform (our team, `tenantId` empty) | Bank (`tenantId` set) |
 |---|---|---|
-| **Admin** (`ADMIN`) | everything, for every bank: banks, users, connectors, apps/patches, rings/windows, notification settings; raises change requests (maker); may be the **second** approver of a two-approver request | its own bank: users, settings; raises change requests **and approves them** (the bank's checker) |
+| **Admin** (`ADMIN`) | everything, for every bank: banks, users, connectors, apps/patches, rings/windows, notification settings; raises change requests (maker); may be the **second** approver of a two-approver request | its own bank: settings; raises change requests **and approves them** (the bank's checker); sees its bank's user list **read-only** — cannot create or change any account |
 | **Auditor** (`AUDITOR`) | read-only across every bank: banks, users, endpoints, patches, change requests, connectors, audit chains (incl. per-bank), reports/exports, operations | read-only within its bank: the same pages for its own bank |
 
 Rules: an auditor never changes anything (only its own password / sessions; it may switch the bank it reads and
 check a SIEM anchor — both change no data) and never sees one-time secrets (temporary passwords, enrolment codes,
 webhook URLs are shown masked). Maker ≠ checker always; every change request needs ≥ 1 approving **admin of that
-bank**; emergency / large requests need two distinct admins, at least one from the bank. A bank admin may reset
-the password / authenticator of its bank's **auditors** only — resetting another admin needs a platform admin
-(audited on the bank's chain; a bank admin must not take over a second admin account and approve its own work).
+bank**; emergency / large requests need two distinct admins, at least one from the bank. **Accounts are managed
+only by platform admins**: creating users (for our team or any bank), editing name / role / active, resetting
+password or MFA and unlocking are platform-admin operations (the API answers 403 "Accounts are managed by PatchGate
+platform administrators" to everyone else). Nobody from a bank creates or changes accounts — otherwise a bank
+admin could mint a second admin, learn its temporary password and approve its own change request. Every account
+change is audited on the user's own chain (bank users: the bank's chain).
 The database refuses the retired roles `VIEWER` / `OPERATOR` / `APPROVER` (CHECK `User_role_scope`).
 SSO: `OIDC_ROLE_MAP` may map only to `ADMIN` / `AUDITOR` (start-up fails otherwise).
 
@@ -254,6 +257,22 @@ Authority 2010/2011* and *Microsoft Identity Verification Root CA 2020* (Microso
 (Assured ID / Trusted Root G4), Sectigo/USERTrust, GlobalSign, Entrust — plus their timestamping roots.
 Keep the bundle under change control; test a known-good installer of each app after every change.
 
+The same bundle is passed as `-TSA-CAfile` (timestamp chain; osslsigncode otherwise uses the Debian TLS
+bundle) — a timestamp that is present but does not verify fails the file. Online CRL checks are off
+(`CODESIGN_CRL_CHECK=off`, `-ignore-crl`): the egress proxy allows HTTPS CONNECT only, CRLs are plain HTTP.
+Set `online` only after allowing HTTP to the CRL hosts.
+
+**winget catalogue index** (`source.msix`, discovery): chain *Microsoft Corporation* ← *Microsoft
+Marketplace CA G 0xx* ← *Microsoft MarketPlace PCA 2011* ← **Microsoft Root Certificate Authority 2011**
+(SHA-256 `847DF6A7…07ED7C61`); timestamp ← *Microsoft Time-Stamp PCA 2010* ← **Microsoft Root Certificate
+Authority 2010** (SHA-256 `DF545BF9…6F3C163E`). Both roots MUST be in the bundle; for this file only the
+self-signed Microsoft roots of the bundle are trusted and the signer is pinned to `O=Microsoft Corporation`.
+Export them from a Windows trust store (`Cert:\LocalMachine\Root`, thumbprints `8F43288A…14C0BCFE` and
+`3B1EFD3A…A340A05BD5`), convert to PEM, compare the SHA-256. Its leaf carries Microsoft's critical
+*Application Policies* extension, which stock OpenSSL rejects ("unhandled critical extension"); the image's
+osslsigncode is built with `patchgate-web/docker/osslsigncode/*.patch`, which accepts exactly that one
+extension. Check: `$DC exec fetcher osslsigncode verify -in <source.msix> -CAfile … -TSA-CAfile … -ignore-crl`.
+
 ### 4.5 TLS certificate
 
 `deploy/tls/fullchain.pem` + `privkey.pem` (0600 root). Public CA or our corporate CA — connectors pin
@@ -284,9 +303,12 @@ Two named admins minimum; record the creation in the change ticket.
 1. **Contract & data-processing** agreement signed; bank security contact and change process recorded.
 2. **Tenant**: platform admin creates the bank (short code, every change request then needs at least one approving
    admin from that bank — fixed platform rule, cannot be turned off) in Admin → Banks.
-3. **Bank users**: create the bank admin (`create-user.ts --tenant <code> --role ADMIN`); the bank admin
-   creates further admins / auditors (§4.1a). Bank admins are the bank's checkers and maker ≠ checker is enforced,
-   so each bank needs at least **two** admins if bank staff also raise requests (one if only our team raises them).
+3. **Bank users**: **our** platform admin creates every account of the bank — its admins and auditors — in
+   Admin → Users (pick the bank) or with `create-user.ts --tenant <code> --role ADMIN|AUDITOR`. The bank never
+   creates, edits, resets or unlocks accounts (§4.1a); bank staff ask their PatchGate administrator (joiners,
+   leavers, role changes, lost authenticator, lock-out). Hand each temporary password over through a separate,
+   trusted channel. Bank admins are the bank's checkers and maker ≠ checker is enforced, so each bank needs at
+   least **two** admins if bank staff also raise requests (one if only our team raises them).
 4. **Network**: get the bank's egress NAT ranges for each connector site; create
    `deploy/nginx/allowlists/connectors.d/<bank-slug>.conf` (template `example-bank.conf.example`) with the
    change ticket, add its `include` line to `allowlists/connectors.conf`, reload nginx. The list is

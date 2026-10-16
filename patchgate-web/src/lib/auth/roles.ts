@@ -3,7 +3,8 @@
  *
  * Two roles, the same for our team (tenantId = null) and inside every bank:
  *  - ADMIN   does everything in its scope. Platform ADMIN: every bank, raises change requests (maker).
- *            Bank ADMIN: its bank's users and settings, raises requests AND approves them (the bank's checker).
+ *            Bank ADMIN: its bank's settings, raises requests AND approves them (the bank's checker).
+ *            User accounts are created and managed ONLY by platform ADMINs (bank users see their bank's list).
  *  - AUDITOR read-only in its scope (platform AUDITOR: every bank; bank AUDITOR: its own bank). Never changes
  *            anything (only its own password / sessions) and never sees one-time secrets.
  * Maker ≠ checker always; every change request needs ≥ 1 approving ADMIN of the request's own bank
@@ -91,7 +92,7 @@ const DESCRIPTION: Readonly<Record<RoleScope, Readonly<Record<ActiveRole, string
     AUDITOR: "Read-only across every bank: lists, audit log, reports and operations. Cannot change anything.",
   }),
   bank: Object.freeze({
-    ADMIN: "Manages this bank's users and settings, raises change requests and approves them (checker).",
+    ADMIN: "Manages this bank's settings, raises change requests and approves them (checker). Accounts are issued by PatchGate.",
     AUDITOR: "Read-only within this bank: endpoints, patches, requests, audit log and reports.",
   }),
 });

@@ -35,17 +35,28 @@ KIT_USERS=(   # PatchGate 1.0.0-rc3 role model (platform ADMIN; bank ADMIN / APP
   "approver|approver@test-bank.test|Test Bank Approver|APPROVER|bank|Test Bank's approver (checker: every change needs the bank's yes)"
   "viewer|viewer@test-bank.test|Test Bank Viewer|VIEWER|bank|Test Bank read-only user"
 )
-# rc4 role model (ADMIN + AUDITOR everywhere; bank ADMINs approve) — swap in when testing rc4:
-#   "platform-admin|admin@pgi.test|Platform Admin|ADMIN|platform|..."
-#   "bank-admin|admin@test-bank.test|Test Bank Admin 1|ADMIN|bank|maker or checker"
-#   "approver|admin2@test-bank.test|Test Bank Admin 2|ADMIN|bank|checker"
-#   "auditor|auditor@test-bank.test|Test Bank Auditor|AUDITOR|bank|read-only"
+# Two-role model (ADMIN + AUDITOR everywhere; bank ADMINs approve) — used automatically when the installed images
+# carry the migration "*_role_scope" (detected in step 6), i.e. releases after 1.0.0-rc3.
+KIT_USERS_V2=(
+  "platform-admin|admin@pgi.test|Platform Admin|ADMIN|platform|our team's administrator (all banks); maker of the test change request"
+  "bank-admin|admin@test-bank.test|Test Bank Admin 1|ADMIN|bank|Test Bank administrator #1 (maker or checker)"
+  "approver|admin2@test-bank.test|Test Bank Admin 2|ADMIN|bank|Test Bank administrator #2 (checker: gives the bank's approval)"
+  "auditor|auditor@test-bank.test|Test Bank Auditor|AUDITOR|bank|Test Bank read-only auditor"
+)
 KIT_CHECK_LOGIN="approver"     # account whose sign-in is verified through the API at the end
 user_keys() { local u; for u in "${KIT_USERS[@]}"; do printf '%s ' "${u%%|*}"; done; }
 user_field() { # key field-number(2=upn,3=name,4=role)
   local u; for u in "${KIT_USERS[@]}"; do [ "${u%%|*}" = "$1" ] && { printf '%s' "$u" | cut -d'|' -f"$2"; return; }; done
 }
 users_conf() { echo "BANK|$KIT_BANK"; printf '%s\n' "${KIT_USERS[@]}"; }
+last_user_upn() { local u="${KIT_USERS[${#KIT_USERS[@]}-1]}"; printf '%s' "$u" | cut -d'|' -f2; }
+ROLE_MODEL="1.0.0-rc3 (platform ADMIN; bank ADMIN / APPROVER / VIEWER)"
+select_role_model() { # the INSTALLED images decide: a migration "*_role_scope" = the two-role model
+  if dx "$SERVER" docker run --rm --entrypoint sh "patchgate-tools:$VERSION" -c 'ls prisma/migrations' 2>/dev/null | grep -q '_role_scope$'; then
+    KIT_USERS=("${KIT_USERS_V2[@]}"); ROLE_MODEL="two roles (ADMIN / AUDITOR; bank ADMINs approve)"
+  fi
+  users_conf | docker exec -i "$SERVER" sh -c 'cat > /root/kit/users.conf'
+}
 SUBNETS=(172.33.0.0/24 172.34.0.0/24 172.35.0.0/24 172.36.0.0/24 172.37.0.0/24 10.233.33.0/24 10.234.34.0/24)
 PORTS=(443 9443 10443 11443 12443 13443 8444)
 LOGS="$KIT/logs"
@@ -177,7 +188,7 @@ do_status() {
   fi
   if [ -n "${HOST_PORT:-}" ]; then
     echo; echo "  URL: https://$DOMAIN$(url_port)/   (needs the hosts line 127.0.0.1 $DOMAIN, see START-HERE.md)"
-    local code; code="$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 10 --cacert "$CA_OUT" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/login" 2>/dev/null || true)"
+    local code; code="$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 10 --cacert "$(hostpath "$CA_OUT")" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/login" 2>/dev/null || true)"
     echo "  From this PC: https://$DOMAIN$(url_port)/login -> HTTP ${code:-none}"
     [ -f "$LOGINS" ] && echo "  Accounts: $LOGINS"
   fi
@@ -315,10 +326,12 @@ server_install() {
 
 accounts() {
   step "Test bank + accounts through the real admin API (sign-in with password + TOTP)"
+  select_role_model
+  info "role model of the installed release: $ROLE_MODEL"
   if is_done "$SERVER" accounts; then ok "already created"; return; fi
   in_server accounts || die "creating the test bank/accounts failed"
   write_logins
-  mark_done "$SERVER" accounts; ok "bank \"Test Bank\" (test-bank) and 4 accounts ready; logins.txt written"
+  mark_done "$SERVER" accounts; ok "bank \"Test Bank\" (test-bank) and ${#KIT_USERS[@]} accounts ready; logins.txt written"
 }
 
 bundle() {
@@ -378,8 +391,8 @@ smoke_and_host() {
   if [ "$rc" = 0 ]; then ok "smoke test PASS"; else warn "smoke test reported $rc failed check(s) (see above)"; fi
   SMOKE_RC=$rc
   local code1 code2
-  code1="$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$CA_OUT" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/api/health" || true)"
-  code2="$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$CA_OUT" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/login" || true)"
+  code1="$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$(hostpath "$CA_OUT")" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/api/health" || true)"
+  code2="$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$(hostpath "$CA_OUT")" --resolve "$DOMAIN:$HOST_PORT:127.0.0.1" "https://$DOMAIN:$HOST_PORT/login" || true)"
   if [ "$code2" = 200 ]; then ok "from this PC: https://$DOMAIN$(url_port)/login -> 200, /api/health -> $code1 (certificate verified with $(basename "$CA_OUT"))"
   else warn "from this PC: /login -> ${code2:-no answer}, /api/health -> ${code1:-no answer}"; fi
   HOST_LOGIN=$code2
@@ -436,7 +449,10 @@ ${B}==================== PatchGate $VERSION is running on this PC (TEST SETUP) =
    d. Connectors page (platform-admin): site "Head office" of Test Bank is ACTIVE / online.
    e. Audit page: every sign-in, approval, enrolment and bundle download is in the bank's tamper-evident chain.
    f. ${B}bank-admin${N} ($(user_field bank-admin 2)): Administration -> Users shows only Test Bank's users;
-      ${B}viewer${N} ($(user_field viewer 2)) can look but not change anything.
+      the read-only account ($(last_user_upn)) can look but not change anything.
+
+  Accounts (role model: $ROLE_MODEL):
+$(for u in "${KIT_USERS[@]}"; do IFS="|" read -r k upn _ role _ what <<<"$u"; printf '    %-15s %-26s %-9s %s\n' "$k" "$upn" "$role" "$what"; done)
 
   Status:   ./test-on-my-pc.sh --status        Clean up:  ./test-on-my-pc.sh --cleanup
   Log:      $LOG_FILE

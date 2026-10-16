@@ -8,7 +8,7 @@ import type { JobPackage } from "@/lib/connector/protocol";
 import { safeDownload } from "@/lib/fetch/http";
 import { orgMatches } from "@/lib/fetch/dn";
 import { discardTemp, newTempFile, publishFile, repoAbsPath } from "@/lib/fetch/repo";
-import { readAuthenticode, type SignatureResult } from "@/lib/fetch/signature";
+import { codesignOptions, readAuthenticode, type SignatureResult } from "@/lib/fetch/signature";
 import { FETCH_HOSTS, MICROSOFT_PUBLISHER, WSUSSCN2_URL, scanCabRepoPath, scanCabVersion } from "./microsoft";
 import { probeHead, type RemoteValidators } from "./probe";
 
@@ -36,7 +36,7 @@ export function defaultCabDeps(): CabDeps {
     probe: (url) => probeHead(url, { allowedHosts: FETCH_HOSTS, timeoutMs: 30_000 }),
     download: (url, dest) =>
       safeDownload(url, dest, { allowedHosts: FETCH_HOSTS, redirects: "allowlist", timeoutMs: e.FETCH_TIMEOUT_MS, maxBytes: Math.min(e.FETCH_MAX_BYTES, MAX_CAB_BYTES) }),
-    readSignature: (path) => readAuthenticode(path, { codesignCaFile: e.CODESIGN_CA_FILE }),
+    readSignature: (path) => readAuthenticode(path, codesignOptions(e)),
   };
 }
 

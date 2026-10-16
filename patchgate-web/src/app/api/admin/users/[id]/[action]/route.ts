@@ -1,6 +1,6 @@
 import { getCurrentUser, requireSameOrigin, requireWriter } from "@/lib/auth/session";
 import { fail, handle, ok } from "@/lib/api/response";
-import { userAction, userActionSchema } from "@/lib/auth/admin-service";
+import { requireAccountManager, userAction, userActionSchema } from "@/lib/auth/admin-service";
 
 /** POST /api/admin/users/:id/reset-password | reset-mfa | unlock */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string; action: string }> }): Promise<Response> {
@@ -11,6 +11,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string; ac
     requireSameOrigin(req);
     const actor = await getCurrentUser();
     requireWriter(actor);
+    requireAccountManager(actor); // bank admins: 403 — accounts are issued by PatchGate only
     const res = ok(await userAction(actor, id, parsed.data.action));
     res.headers.set("Cache-Control", "no-store");
     return res;

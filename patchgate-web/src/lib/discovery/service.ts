@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
+import { codesignOptions } from "@/lib/fetch/signature";
 import { appendAudit } from "@/lib/audit/service";
 import { DomainError } from "@/lib/errors";
 import type { SoftwareItem } from "@/lib/tactical/types";
@@ -100,7 +101,7 @@ export async function refreshCatalogDue(now = new Date()) {
   const e = env();
   const run = await prisma.fetchRun.create({ data: { source: INDEX_SOURCE } });
   try {
-    const r = await refreshWingetIndex({ repoDir: e.REPO_DIR, timeoutMs: e.FETCH_TIMEOUT_MS, codesignCaFile: e.CODESIGN_CA_FILE });
+    const r = await refreshWingetIndex({ repoDir: e.REPO_DIR, timeoutMs: e.FETCH_TIMEOUT_MS, codesign: codesignOptions(e) });
     await prisma.fetchRun.update({ where: { id: run.id }, data: { finishedAt: new Date(), ok: true, message: `${r.packages} packages` } });
     return r;
   } catch (err: unknown) {

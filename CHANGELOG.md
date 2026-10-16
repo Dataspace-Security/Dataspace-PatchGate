@@ -11,6 +11,14 @@ signer, egress proxy, backup, site bundle. The connector protocol has its own in
 ## [Unreleased]
 
 ### Changed
+- **User accounts are managed only by PatchGate platform admins.** Creating users, editing name / role / active,
+  resetting password or MFA and unlocking now return 403 ("Accounts are managed by PatchGate platform
+  administrators") for bank admins and bank auditors; they keep a read-only list of their own bank's users
+  (/admin/users shows no form and no row actions). Platform admins create the bank's admins and auditors
+  (Admin → Users or `create-user.ts --tenant`). Closes the maker-checker gap where a bank admin could create a
+  second admin, learn its temporary password and approve their own change request. Removed the now-unneeded
+  bank-admin rules: "bank admins reset only auditors" (`user.reset_denied`) and the 30-day promotion cooldown
+  after a bank-admin reset. The first sign-in after a reset is still flagged `afterReset=true`.
 - Server installer: `--image-archive` also takes a release `images/` directory (loads every archive in it).
 - **Role model: two roles, the same for our team and inside every bank** — `ADMIN` (does everything in its
   scope; a bank admin is also the bank's checker) and the new `AUDITOR` (read-only: platform auditors read every
@@ -20,7 +28,7 @@ signer, egress proxy, backup, site bundle. The connector protocol has its own in
   default `AUDITOR`). Existing users are mapped: platform `OPERATOR`/`APPROVER`/`VIEWER` → `AUDITOR`; bank
   `APPROVER` → `ADMIN` (bank admins are the checkers now); bank `OPERATOR`/`VIEWER` → `AUDITOR`. **Platform
   makers (former operators) become auditors — give them `ADMIN` again if they must keep raising requests.**
-  Bank admins may reset only auditors' credentials (another admin: platform admin). `OIDC_ROLE_MAP` accepts only
+  `OIDC_ROLE_MAP` accepts only
   `ADMIN` / `AUDITOR`; `create-user.ts --role ADMIN|AUDITOR`.
 - **`AUTH_MFA=required|off`** (default `required`): `off` = local sign-in with the password only (stored TOTP
   secrets kept; temporary-password change, lockout and session rules unchanged). While off: banner for admins,
@@ -29,6 +37,22 @@ signer, egress proxy, backup, site bundle. The connector protocol has its own in
 - Simpler navigation: rings, maintenance windows, approval policy, notifications and account security are one
   **Advanced settings** group; reboot policy and emergency change are under **Advanced options** on the change
   request form / draft. No behaviour or default changed.
+
+### Fixed
+- **winget catalogue index never verified on Linux** (third-party discovery stayed empty). Causes: the
+  index signer certificate carries Microsoft's critical *Application Policies* extension (OID
+  1.3.6.1.4.1.311.21.10) that OpenSSL rejects ("unhandled critical extension"), and osslsigncode checked the
+  timestamp against the Debian TLS bundle instead of `CODESIGN_CA_FILE`. The image now builds osslsigncode
+  2.14 with `docker/osslsigncode/0001-accept-ms-application-policies.patch` (accepts exactly that extension),
+  passes `-TSA-CAfile`, and the index is trusted only via the self-signed Microsoft roots of the bundle
+  (needs *Microsoft Root Certificate Authority 2011* + *2010*, RUNBOOK §4.4) with signer `O=Microsoft
+  Corporation`. New `CODESIGN_CRL_CHECK=off|online` (default `off`: `-ignore-crl`; CRLs are plain HTTP and the
+  egress proxy is HTTPS-only).
+- **Signature verification hardening (Linux):** `osslsigncode` results now require exit code 0, "Succeeded" and
+  a line-anchored `Signature verification: ok`; previously "Timestamp Server Signature verification: ok"
+  alone matched. A timestamp that is present but does not verify now fails the file.
+- Server installer: the post-install smoke test waits up to 3 min (`SMOKE_WAIT_SIEM=180`) for the first SIEM
+  audit export instead of failing `siemExport`; with the placeholder SIEM it reports WARN, not FAIL.
 
 ## [1.0.0-rc3] - 2026-10-16
 

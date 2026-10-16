@@ -163,6 +163,8 @@ test("admin onboards a bank and creates a one-time connector enrolment code in t
   const code = page.locator("code").filter({ hasText: ENROLL_CODE_RE }).first();
   await expect(code).toBeVisible();
   expect((await code.textContent())?.trim()).toMatch(ENROLL_CODE_RE);
+  // The manual connector init command sits in the collapsed "Offline / USB alternative" block (rc3 UI).
+  await page.getByText("Offline / USB alternative and manual connector init").click();
   // The init command names OUR public URL (PUBLIC_BASE_URL), never the code in the process list.
   await expect(page.getByText(/PATCHGATE_ENROLL_CODE=/).first()).toBeVisible();
   await expect(page.getByText(/--server https:\/\/patchgate\.patchgate-lab\.internal:3443/).first()).toBeVisible();
@@ -274,7 +276,8 @@ test("connector enrolment panel shows the job-key fingerprint and the init comma
   await page.locator("form").filter({ hasText: "Site name" }).locator("select").selectOption({ label: BANK_B.name });
   await page.getByLabel("Site name").fill("Bank B Branch 02");
   await page.getByRole("button", { name: "Create code" }).click();
-  await expect(page.getByText("Job-signing key fingerprint (SHA-256) for this bank")).toBeVisible();
+  await expect(page.getByText(/Confirm the fingerprint by phone \(job-signing key, SHA-256\)/)).toBeVisible();
+  await page.getByText("Offline / USB alternative and manual connector init").click();
   await expect(page.locator("code").filter({ hasText: /^[0-9a-f]{64}$/ })).toHaveText(fpr);
   const init = page.locator("pre").filter({ hasText: "init" }).first();
   await expect(init).toContainText(`--job-key-fingerprint ${fpr}`);
@@ -352,7 +355,8 @@ test("a different person (Bank A approver) approves; the frozen target count is 
   await page.goto(crPath);
   const header = page.locator("p").filter({ hasText: "Target endpoints" }).first();
   await expect(header).toBeVisible();
-  const frozen = ((await header.locator("b").last().textContent()) ?? "").trim();
+  // Header: Ring · Window · Ticket · Target endpoints · Reboot (rc3) — the 4th bold value is the target count.
+  const frozen = ((await header.locator("b").nth(3).textContent()) ?? "").trim();
   expect(frozen).toMatch(/^\d+$/); // fixed at submission (not "fixed on submit")
   await shotThemes(page, "18-approver-pending");
   let dialogText = "";

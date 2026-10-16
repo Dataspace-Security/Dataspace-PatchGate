@@ -9,7 +9,7 @@ configureTestEnv({ AUTH_MODE: "local", AUTH_ENC_KEY: "ab".repeat(32) });
 
 const { prisma } = await import("@/lib/db");
 const { beginPasswordLogin, verifyTotpStep, changePasswordStep } = await import("@/lib/auth/local-login");
-const { createUser, updateUser, userAction, createTenant, canResetCredentials } = await import("@/lib/auth/admin-service");
+const { createUser, updateUser, userAction, createTenant } = await import("@/lib/auth/admin-service");
 const { hashPassword } = await import("@/lib/auth/password");
 const { base32Decode, hotp, totpStep } = await import("@/lib/auth/totp");
 const { flushUnknownLoginSummary, resetUnknownLoginSummary } = await import("@/lib/auth/unknown-login-summary");
@@ -59,61 +59,37 @@ async function firstLogin(upn: string, temporaryPassword: string, when: Date): P
 const lastLogin = async (userId: string) =>
   prisma.auditEvent.findFirstOrThrow({ where: { action: "auth.login", entityId: userId }, orderBy: { seq: "desc" } });
 
-describe("finding #3: credential resets of (other) bank admins", () => {
-  it("rule table: bank admins reset only auditors; admin resets need a platform admin", () => {
-    expect(canResetCredentials("bank", "reset-password", "AUDITOR")).toBe(true);
-    expect(canResetCredentials("bank", "reset-mfa", "AUDITOR")).toBe(true);
-    expect(canResetCredentials("bank", "reset-password", "ADMIN")).toBe(false);
-    expect(canResetCredentials("bank", "reset-mfa", "ADMIN")).toBe(false);
-    expect(canResetCredentials("bank", "unlock", "ADMIN")).toBe(true);
-    expect(canResetCredentials("platform", "reset-password", "ADMIN")).toBe(true);
-  });
-
-  it("a bank admin cannot reset another bank admin (audited on the bank chain); a platform admin can", async () => {
+describe("finding #3: credential resets are platform-only (accounts are issued by PatchGate)", () => {
+  it("a bank admin cannot reset, unlock, re-role or create any account; a platform admin can (bank chain)", async () => {
     const { root, bank, bankAdmin } = await setup();
     const approver = (await createUser(root, { upn: "checker@bank-a.test", name: "Checker", role: "ADMIN", tenantId: bank.id })).user;
-    const before = await prisma.user.findUniqueOrThrow({ where: { id: approver.id } });
+    const aud = (await createUser(root, { upn: "aud@bank-a.test", name: "Aud", role: "AUDITOR", tenantId: bank.id })).user;
+    const before = await prisma.user.findMany({ orderBy: { upn: "asc" } });
 
-    for (const action of ["reset-password", "reset-mfa"] as const) {
-      await expect(userAction(bankAdmin, approver.id, action)).rejects.toMatchObject({ status: 403 });
+    for (const target of [approver.id, aud.id]) {
+      for (const action of ["reset-password", "reset-mfa", "unlock"] as const) {
+        await expect(userAction(bankAdmin, target, action)).rejects.toMatchObject({ status: 403 });
+      }
+      await expect(updateUser(bankAdmin, target, { role: "ADMIN" })).rejects.toMatchObject({ status: 403 });
     }
-    const after = await prisma.user.findUniqueOrThrow({ where: { id: approver.id } });
-    expect(after.passwordHash).toBe(before.passwordHash);
-    const denied = await prisma.auditEvent.findMany({ where: { action: "user.reset_denied" } });
-    expect(denied).toHaveLength(2);
-    expect(denied.every((e) => e.tenantId === bank.id && e.actor === bankAdmin.upn)).toBe(true);
-    // another bank admin, too
-    const admin2 = (await createUser(root, { upn: "admin2@bank-a.test", name: "Admin 2", role: "ADMIN", tenantId: bank.id })).user;
-    await expect(userAction(bankAdmin, admin2.id, "reset-password")).rejects.toMatchObject({ status: 403 });
-    // unlock reveals nothing: allowed
-    await userAction(bankAdmin, approver.id, "unlock");
+    // the maker-checker gap: a bank admin may not mint a second admin (and learn its temporary password)
+    await expect(createUser(bankAdmin, { upn: "sock@bank-a.test", name: "Sock puppet", role: "ADMIN", tenantId: bank.id })).rejects.toMatchObject({ status: 403 });
+    expect(await prisma.user.findMany({ orderBy: { upn: "asc" } })).toEqual(before);
+    expect(await prisma.auditEvent.count({ where: { actor: bankAdmin.upn } })).toBe(0);
 
     const r = await userAction(root, approver.id, "reset-password");
     expect(r.temporaryPassword).toBeTruthy();
     const ev = await prisma.auditEvent.findFirstOrThrow({ where: { action: "user.password_reset", entityId: approver.id } });
     expect(ev.tenantId).toBe(bank.id); // the BANK chain
-    expect(ev.payload).toMatchObject({ targetRole: "ADMIN", byPlatformAdmin: true, nextLoginFlagged: true });
+    expect(ev.payload).toMatchObject({ targetRole: "ADMIN", nextLoginFlagged: true });
     expect((await verifyAuditLog(bank.id)).valid).toBe(true);
-  });
-
-  it("closes demote → reset → promote: a bank admin may not re-grant admin for 30 days", async () => {
-    const { root, bank, bankAdmin } = await setup();
-    const approver = (await createUser(root, { upn: "checker@bank-a.test", name: "Checker", role: "ADMIN", tenantId: bank.id })).user;
-    await updateUser(bankAdmin, approver.id, { role: "AUDITOR" });
-    await userAction(bankAdmin, approver.id, "reset-password"); // allowed: the target is an auditor now
-    await expect(updateUser(bankAdmin, approver.id, { role: "ADMIN" })).rejects.toMatchObject({ status: 403 });
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: approver.id } })).role).toBe("AUDITOR");
-    await updateUser(root, approver.id, { role: "ADMIN" }); // platform admin decides
-    // no reset → promotion by the bank admin is fine
-    const aud = (await createUser(bankAdmin, { upn: "aud@bank-a.test", name: "Aud", role: "AUDITOR" })).user;
-    await updateUser(bankAdmin, aud.id, { role: "ADMIN" });
   });
 
   it("the retired roles can no longer be granted (zod) and the database refuses them (User_role_scope)", async () => {
     const { root, bank, bankAdmin } = await setup();
     for (const role of ["VIEWER", "OPERATOR", "APPROVER"]) {
       await expect(createUser(root, { upn: `x-${role}@bank-a.test`, name: "X", role: role as "ADMIN", tenantId: bank.id })).rejects.toThrow();
-      await expect(updateUser(bankAdmin, bankAdmin.id, { role: role as "ADMIN" })).rejects.toThrow();
+      await expect(updateUser(root, bankAdmin.id, { role: role as "ADMIN" })).rejects.toThrow();
     }
     await expect(prisma.user.create({ data: { upn: "p-approver@pg.test", name: "P", role: "APPROVER" } })).rejects.toThrow(/User_role_scope/);
     await expect(prisma.user.create({ data: { upn: "b-viewer@bank-a.test", name: "B", role: "VIEWER", tenantId: bank.id } })).rejects.toThrow(/User_role_scope/);
@@ -125,20 +101,20 @@ describe("finding #3: credential resets of (other) bank admins", () => {
   });
 
   it("the first sign-in after a reset is flagged afterReset=true (SIEM alert); later ones are not", async () => {
-    const { bank, bankAdmin } = await setup();
-    const { user, temporaryPassword } = await createUser(bankAdmin, { upn: "teller@bank-a.test", name: "Teller", role: "AUDITOR" });
+    const { root, bank } = await setup();
+    const { user, temporaryPassword } = await createUser(root, { upn: "teller@bank-a.test", name: "Teller", role: "AUDITOR", tenantId: bank.id });
     const t0 = new Date(Date.now() - 120_000);
     const secret0 = await firstLogin(user.upn, temporaryPassword, t0);
     expect((await lastLogin(user.id)).payload).not.toHaveProperty("afterReset");
     expect(secret0).toBeTruthy();
 
-    await userAction(bankAdmin, user.id, "reset-mfa");
+    await userAction(root, user.id, "reset-mfa");
     const t1 = new Date(Date.now() + 30_000);
     const enrol = expectStep(await beginPasswordLogin({ upn: user.upn, password: STRONG }, META, t1), "enroll");
     expectStep(await verifyTotpStep(enrol.challengeToken, codeFor(enrol.secret, t1), META, t1), "done");
     const flagged = await lastLogin(user.id);
     expect(flagged.tenantId).toBe(bank.id);
-    expect(flagged.payload).toMatchObject({ afterReset: true, resetAction: "user.mfa_reset", resetBy: bankAdmin.upn });
+    expect(flagged.payload).toMatchObject({ afterReset: true, resetAction: "user.mfa_reset", resetBy: root.upn });
 
     const t2 = new Date(Date.now() + 90_000);
     const v = expectStep(await beginPasswordLogin({ upn: user.upn, password: STRONG }, META, t2), "verify");
@@ -147,7 +123,7 @@ describe("finding #3: credential resets of (other) bank admins", () => {
 
     // password reset: flagged on the forced-change path (the logins above used future clocks for TOTP steps)
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date(Date.now() - 1000) } });
-    const r = await userAction(bankAdmin, user.id, "reset-password");
+    const r = await userAction(root, user.id, "reset-password");
     const t3 = new Date(Date.now() + 150_000);
     const v3 = expectStep(await beginPasswordLogin({ upn: user.upn, password: r.temporaryPassword! }, META, t3), "verify");
     const ch = expectStep(await verifyTotpStep(v3.challengeToken, codeFor(enrol.secret.replace(/\s+/g, ""), t3), META, t3), "change-password");

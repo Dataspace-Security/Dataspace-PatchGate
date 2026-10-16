@@ -248,8 +248,8 @@ describe("enqueue in the triggering transaction", () => {
   it("credential resets notify the affected user only; personal opt-outs do not apply to them", async () => {
     const p = await people();
     const viewer = asSessionUser(await admin.user.create({ data: { upn: "viewer@a.example", name: "Viewer", role: "AUDITOR", tenantId: TENANT_A } }));
-    await userAction(p.bankAdmin, viewer.id, "reset-password");
-    await userAction(p.bankAdmin, viewer.id, "reset-mfa");
+    await userAction(p.platformAdmin, viewer.id, "reset-password"); // accounts are managed by platform admins only
+    await userAction(p.platformAdmin, viewer.id, "reset-mfa");
     const r = (await rows()).map((x) => [x.event, x.target, x.tenantId]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
     expect(r).toEqual([
       ["MFA_RESET", "viewer@a.example", TENANT_A],

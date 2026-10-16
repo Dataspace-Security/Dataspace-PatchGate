@@ -41,6 +41,10 @@ const baseSchema = z.object({
   FETCH_MAX_BYTES: z.coerce.number().int().positive().default(2_147_483_648),
   GITHUB_TOKEN: z.string().optional(), // optional: raises GitHub API rate limit for manifest lookups
   CODESIGN_CA_FILE: z.string().optional(), // non-Windows hosts: CA bundle for osslsigncode verification
+  // Online CRL revocation check by osslsigncode: "online" fetches each certificate's CRL distribution point
+  // over plain HTTP (needs egress to the CRL hosts); "off" (default) skips it — the hosted fetcher's egress
+  // proxy allows HTTPS CONNECT only. Windows hosts use the OS policy. RUNBOOK §4.4.
+  CODESIGN_CRL_CHECK: z.enum(["off", "online"]).default("off"),
   // Trusted reverse proxies in front of PatchGate (rate-limit keys). Production: >= 1.
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
   // ---- Bank SSO (OpenID Connect: Entra ID, ADFS 2016+, Keycloak). Mandatory in production. ----

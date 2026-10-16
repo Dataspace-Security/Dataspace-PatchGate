@@ -94,8 +94,14 @@ Two roles, the same for our team and inside every bank:
 
 | Role | Platform (our team, `tenantId` empty) | Bank (`tenantId` set) |
 |---|---|---|
-| **Admin** (`ADMIN`) | everything, for every bank: banks, users, connectors, apps/patches, rings/windows, notification settings; raises change requests (maker); may be the **second** approver of a two-approver request | its own bank: users, settings; raises change requests **and approves them** (the bank's checker) |
+| **Admin** (`ADMIN`) | everything, for every bank: banks, users, connectors, apps/patches, rings/windows, notification settings; raises change requests (maker); may be the **second** approver of a two-approver request | its own bank: settings; raises change requests **and approves them** (the bank's checker); sees its bank's users read-only |
 | **Auditor** (`AUDITOR`) | read-only across every bank: banks, users, endpoints, patches, change requests, connectors, audit chains (incl. per-bank), reports/exports, operations | read-only within its bank: the same pages for its own bank |
+
+**Accounts are ours.** Only a platform admin (our team) creates or changes user accounts — for our team and for
+every bank: new users, name / role changes, deactivation, password or authenticator reset, unlock. Bank admins and
+bank auditors can only *see* their bank's user list; when a bank needs a new user, a leaver removed or a reset, it
+asks its PatchGate administrator. (This keeps maker ≠ checker real: a bank admin cannot create a second admin
+account for themselves.)
 
 The normal flow is short: **pick patches → create the request → a bank admin approves → deploy.** Rings,
 maintenance windows, emergency changes, notification rules and the approval policy are under **Advanced

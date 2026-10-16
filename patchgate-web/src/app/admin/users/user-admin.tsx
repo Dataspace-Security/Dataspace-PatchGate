@@ -57,14 +57,15 @@ function TemporaryPassword({ secret, onClose }: { secret: Secret; onClose: () =>
   );
 }
 
-export function CreateUserForm({ platform, banks, ownBankName }: { platform: boolean; banks: BankOption[]; ownBankName: string | null }) {
+/** Platform admins only (the page renders it for nobody else; the API refuses everyone else). */
+export function CreateUserForm({ banks }: { banks: BankOption[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [secret, setSecret] = useState<Secret | null>(null);
   const [form, setForm] = useState({ upn: "", name: "", role: "AUDITOR" as ActiveRole, bank: banks.find((b) => b.active)?.id ?? PLATFORM });
-  const scope: RoleScope = platform && form.bank === PLATFORM ? "platform" : "bank";
+  const scope: RoleScope = form.bank === PLATFORM ? "platform" : "bank";
   const options = roleOptions(scope);
   const chosen = options.find((o) => o.value === form.role);
 
@@ -72,7 +73,7 @@ export function CreateUserForm({ platform, banks, ownBankName }: { platform: boo
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const body = { upn: form.upn, name: form.name, role: form.role, ...(platform ? { tenantId: form.bank === PLATFORM ? null : form.bank } : {}) };
+    const body = { upn: form.upn, name: form.name, role: form.role, tenantId: form.bank === PLATFORM ? null : form.bank };
     const r = await callApi<{ user: { upn: string }; temporaryPassword: string }>("/api/admin/users", "POST", body);
     setBusy(false);
     if (!r.ok) return setError(r.error);
@@ -90,7 +91,7 @@ export function CreateUserForm({ platform, banks, ownBankName }: { platform: boo
           <UserPlus size={16} aria-hidden /> New user
         </button>
       ) : (
-        <Card title="New user" description={platform ? "Choose the bank — or our team for PatchGate staff." : `The user will belong to ${ownBankName ?? "your bank"}.`}>
+        <Card title="New user" description="Choose the bank — or our team for PatchGate staff.">
           <form method="post" onSubmit={submit} className="grid gap-4 md:grid-cols-2">
             <label className={labelCls}>
               Sign-in name (UPN)
@@ -111,26 +112,19 @@ export function CreateUserForm({ platform, banks, ownBankName }: { platform: boo
               </select>
               {chosen && <span className="mt-1 block text-xs font-normal text-muted">{chosen.description}</span>}
             </label>
-            {platform ? (
-              <label className={labelCls}>
-                Bank
-                <select className={inputCls} value={form.bank} onChange={(e) => setForm({ ...form, bank: e.target.value })}>
-                  <option value={PLATFORM}>PatchGate team (all banks)</option>
-                  {banks.map((b) => (
-                    <option key={b.id} value={b.id} disabled={!b.active}>
-                      {b.name}
-                      {b.active ? "" : " (inactive)"}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <div className={labelCls}>
-                Bank
-                <p className="mt-1 rounded-lg bg-surface-2 px-3 py-2 text-sm text-muted">{ownBankName ?? "Your bank"}</p>
-              </div>
-            )}
-            {platform && form.bank === PLATFORM && form.role === "ADMIN" && (
+            <label className={labelCls}>
+              Bank
+              <select className={inputCls} value={form.bank} onChange={(e) => setForm({ ...form, bank: e.target.value })}>
+                <option value={PLATFORM}>PatchGate team (all banks)</option>
+                {banks.map((b) => (
+                  <option key={b.id} value={b.id} disabled={!b.active}>
+                    {b.name}
+                    {b.active ? "" : " (inactive)"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {form.bank === PLATFORM && form.role === "ADMIN" && (
               <div className="md:col-span-2">
                 <Alert tone="warn">A PatchGate-team admin can manage every bank and every user.</Alert>
               </div>
@@ -165,12 +159,8 @@ interface RowUser {
   locked: boolean;
 }
 
-/**
- * Per-row actions: edit name/role, reset password / MFA, unlock, deactivate / reactivate.
- * canResetCredentials mirrors the server rule (admin-service): bank admins may reset only AUDITOR
- * credentials; resetting an ADMIN needs a platform admin (a second admin account cannot be taken over).
- */
-export function UserActions({ user, self, platform, canResetCredentials = true }: { user: RowUser; self: boolean; platform: boolean; canResetCredentials?: boolean }) {
+/** Per-row actions for platform admins: edit name/role, reset password / MFA, unlock, deactivate / reactivate. */
+export function UserActions({ user, self, bankUser }: { user: RowUser; self: boolean; bankUser: boolean }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [busy, setBusy] = useState(false);
@@ -207,7 +197,7 @@ export function UserActions({ user, self, platform, canResetCredentials = true }
         >
           <input className={`${inputCls} mt-0 w-40`} aria-label="Full name" required maxLength={120} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
           <select className={`${inputCls} mt-0 w-36`} aria-label="Role" value={draft.role} disabled={self} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })}>
-            {roleOptions(platform ? "platform" : "bank").map((r) => (
+            {roleOptions(bankUser ? "bank" : "platform").map((r) => (
               <option key={r.value} value={r.value} title={r.description}>
                 {ROLE_LABEL[r.value]}
               </option>
@@ -226,7 +216,7 @@ export function UserActions({ user, self, platform, canResetCredentials = true }
           <button type="button" className={iconBtn} disabled={working} onClick={() => setEditing(true)} title="Edit name or role">
             <Pencil size={13} aria-hidden /> Edit
           </button>
-          {user.active && canResetCredentials && (
+          {user.active && (
             <>
               <button
                 type="button"

@@ -4,6 +4,9 @@
 #   CA_FILE=tls/ca.pem ./scripts/smoke-test.sh https://...            # private CA
 #   INTERNAL=1 ./scripts/smoke-test.sh https://...                    # + checks inside the compose network
 #   WSUS_ENABLED=1 / REPO_ENABLED=1                                   # legacy routes deliberately opened
+#   SMOKE_WAIT_SIEM=180                                               # fresh install: wait (seconds) for the
+#                                                                     # first SIEM audit export (installer)
+# siemExport=false with the installer's placeholder SIEM (siem.not-configured.invalid) is a WARN, not a FAIL.
 # /api/ready is answered at the edge only for allowlists/health.conf sources (404 elsewhere); from other
 # sources run with INTERNAL=1 (readiness is then read from web-1 directly).
 # Exit code = number of failed checks (0 = all good).
@@ -18,6 +21,7 @@ CURL=(curl -sS --max-time 20)
 fails=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+warn() { printf '  WARN  %s\n' "$1"; }
 check() { if eval "$2"; then pass "$1"; else fail "$1"; fi; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -47,11 +51,14 @@ echo "Health"
 code="$("${CURL[@]}" -o "$TMP/health" -w '%{http_code}' "$BASE/api/health" || true)"; code="${code:0:3}"; code="${code:-000}"
 check "/api/health 200 (got $code)" "[ '$code' = 200 ] && grep -q '\"ok\"' '$TMP/health'"
 DC=(docker compose -f docker-compose.prod.yml --env-file .env.production)
+READY_JS="fetch('http://127.0.0.1:3000/api/ready').then(r=>r.text().then(t=>{process.stdout.write(t);process.exit(r.ok?0:1)}),()=>process.exit(1))"
+READY_VIA=edge
 code="$("${CURL[@]}" -o "$TMP/ready" -w '%{http_code}' "$BASE/api/ready" || true)"; code="${code:0:3}"; code="${code:-000}"
 if [ "$code" = 404 ]; then
   pass "/api/ready restricted at the edge for this source (404; allowlists/health.conf)"
   if [ "${INTERNAL:-0}" = "1" ]; then
-    "${DC[@]}" exec -T web-1 node -e "fetch('http://127.0.0.1:3000/api/ready').then(r=>r.text().then(t=>{process.stdout.write(t);process.exit(r.ok?0:1)}),()=>process.exit(1))" > "$TMP/ready" 2>/dev/null
+    READY_VIA=internal
+    "${DC[@]}" exec -T web-1 node -e "$READY_JS" > "$TMP/ready" 2>/dev/null
     code=$?; [ "$code" = 0 ] && code=200 || code=503
   else
     printf '  HINT  this source cannot read /api/ready: re-run with INTERNAL=1 (or from a health.conf address) — the readiness checks below will fail until then\n'
@@ -62,7 +69,31 @@ for c in database migrations repository; do
   check "ready.checks.$c = true" "grep -q '\"$c\":true' '$TMP/ready'"
 done
 check "ready.checks.auditChain = true" "grep -q '\"auditChain\":true' '$TMP/ready'"
-check "ready.checks.siemExport != false" "! grep -q '\"siemExport\":false' '$TMP/ready'"
+# Re-read /api/ready the same way; keep the previous answer unless the new one is a readiness document.
+refresh_ready() {
+  if [ "$READY_VIA" = internal ]; then
+    "${DC[@]}" exec -T web-1 node -e "$READY_JS" > "$TMP/ready.new" 2>/dev/null || true
+  else
+    "${CURL[@]}" -o "$TMP/ready.new" "$BASE/api/ready" >/dev/null 2>&1 || true
+  fi
+  if grep -q '"siemExport"' "$TMP/ready.new" 2>/dev/null; then mv "$TMP/ready.new" "$TMP/ready"; fi
+}
+siem_false() { grep -q '"siemExport":false' "$TMP/ready"; }
+siem_url="$(sed -n 's/^SIEM_SYSLOG_URL=//p' .env.production 2>/dev/null | tail -1)"
+wait_siem="${SMOKE_WAIT_SIEM:-0}"; case "$wait_siem" in ''|*[!0-9]*) wait_siem=0 ;; esac
+case "$siem_url" in
+  *not-configured.invalid*)
+    if siem_false; then warn "ready.checks.siemExport = false: no platform SIEM configured (placeholder SIEM_SYSLOG_URL) - set it before go-live"
+    else pass "ready.checks.siemExport != false"; fi ;;
+  *)
+    # Fresh install: siemExport stays false until the scheduler's first tick has exported the audit events.
+    if [ "$wait_siem" -gt 0 ] && siem_false; then
+      printf '  WAIT  siemExport=false: waiting up to %ss for the first SIEM audit export (scheduler tick: 1 min)\n' "$wait_siem"
+      deadline=$(( $(date +%s) + wait_siem ))
+      while siem_false && [ "$(date +%s)" -lt "$deadline" ]; do sleep 10; refresh_ready; done
+    fi
+    check "ready.checks.siemExport != false" "! siem_false" ;;
+esac
 
 # --- security headers (set by the app, passed through by nginx; HSTS by nginx)
 echo "Security headers"

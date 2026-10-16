@@ -15,7 +15,7 @@ import { compareVersions } from "@/lib/thirdparty/version";
 import { appendPin } from "./dn";
 import { assertAllowedUrl, assertPublicHttpsUrl, safeDownload, safeFetchJson, safeFetchText } from "./http";
 import { discardTemp, newTempFile, pendingAbs, publishFile, repoAbsPath } from "./repo";
-import { readAuthenticode, readFileVersion } from "./signature";
+import { codesignOptions, readAuthenticode, readFileVersion } from "./signature";
 import {
   WINGET_HOSTS,
   contentsListingSchema,
@@ -157,7 +157,7 @@ export async function fetchApp(app: App, now = new Date()): Promise<FetchAppResu
         timeoutMs: e.FETCH_TIMEOUT_MS,
         maxBytes: e.FETCH_MAX_BYTES,
       });
-      const signature = await readAuthenticode(tmp, { codesignCaFile: e.CODESIGN_CA_FILE });
+      const signature = await readAuthenticode(tmp, codesignOptions(e));
       const decision = decideTrust({
         signature,
         pins: app.expectedPublisher,

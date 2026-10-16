@@ -7,9 +7,11 @@ import { Badge, Card, EmptyState, Loading, PageHeader, Stat, fmtDate, rowCls, ta
 import { AdminTabs, getAdminUser } from "./admin-guard";
 
 async function Overview() {
-  const { user, denied, readOnly } = await getAdminUser();
+  const { user, denied, readOnly: auditor } = await getAdminUser();
   if (denied) return denied;
   const platform = user.tenantId === null;
+  // Accounts are managed by platform admins only: for every bank user the Users list is read-only.
+  const readOnly = auditor || !platform;
   const scope = platform ? {} : { tenantId: user.tenantId };
   const now = new Date();
 
@@ -31,7 +33,7 @@ async function Overview() {
         description={
           platform
             ? "Platform administration: banks, our team and every bank's users."
-            : `Bank administration for ${tenant?.name ?? "your bank"}: manage your bank's PatchGate users.`
+            : `Bank administration for ${tenant?.name ?? "your bank"}: your bank's PatchGate users (accounts are managed by PatchGate).`
         }
       />
       <AdminTabs active="overview" platform={platform} />

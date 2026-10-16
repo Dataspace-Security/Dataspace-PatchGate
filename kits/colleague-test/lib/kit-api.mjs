@@ -242,15 +242,24 @@ async function crCheck(ringId, patchId, checkerKey) {
   if (!PEOPLE[checkerKey]) throw new Error(`unknown checker account ${checkerKey}`);
   const admin = await signIn(ADMIN_KEY);
   must(await call(admin, "POST", "/api/tenant/select", { tenantId: st.bankId }), "select Test Bank");
-  const cr = must(
-    await call(admin, "POST", "/api/change-requests", { title: "Kit check: maker/checker (TEST FIXTURE patch)", ticketRef: "KIT-1", ringId, patchIds: [patchId] }),
-    "create change request",
-  );
-  log(`${PEOPLE[ADMIN_KEY].upn} (maker) created change request ${cr.id} for ${BANK.name}`);
-  must(await call(admin, "POST", `/api/change-requests/${cr.id}/submit`, {}), "submit change request");
+  const bankMaker = Object.keys(PEOPLE).find((k) => PEOPLE[k].bank && k !== checkerKey && ["ADMIN", "OPERATOR", "APPROVER"].includes(PEOPLE[k].role));
+  const body1 = { title: "Kit check: maker/checker (TEST FIXTURE patch)", ticketRef: "KIT-1", ringId, patchIds: [patchId] };
+  // Maker = the platform admin; a role model where only bank users raise requests falls back to a bank admin.
+  let makerKey = ADMIN_KEY;
+  let maker = admin;
+  let r1 = await call(admin, "POST", "/api/change-requests", body1);
+  if (!r1.json.success && r1.status === 403 && bankMaker) {
+    log(`${PEOPLE[ADMIN_KEY].upn} may not raise change requests in this release (${r1.json.error}); maker = ${PEOPLE[bankMaker].upn}`);
+    makerKey = bankMaker;
+    maker = await signIn(bankMaker);
+    r1 = await call(maker, "POST", "/api/change-requests", body1);
+  }
+  const cr = must(r1, "create change request");
+  log(`${PEOPLE[makerKey].upn} (maker) created change request ${cr.id} for ${BANK.name}`);
+  must(await call(maker, "POST", `/api/change-requests/${cr.id}/submit`, {}), "submit change request");
   log("submitted for approval");
-  const self = await call(admin, "POST", `/api/change-requests/${cr.id}/approve`, { reason: "kit check: maker tries to approve" });
-  if (self.json.success) throw new Error("UNEXPECTED: the maker (platform admin) could approve its own change request");
+  const self = await call(maker, "POST", `/api/change-requests/${cr.id}/approve`, { reason: "kit check: maker tries to approve" });
+  if (self.json.success) throw new Error("UNEXPECTED: the maker could approve its own change request");
   log(`maker approves own request -> refused (HTTP ${self.status}: ${self.json.error})`);
   const checker = await signIn(checkerKey);
   const ok2 = await call(checker, "POST", `/api/change-requests/${cr.id}/approve`, { reason: "kit check: bank approval" });
@@ -258,7 +267,6 @@ async function crCheck(ringId, patchId, checkerKey) {
   log(`${PEOPLE[checkerKey].upn} (bank checker) approves -> HTTP ${ok2.status}, status ${d.status ?? d.changeRequest?.status ?? "?"}`);
 
   // Second request raised by a bank user: the platform admin is NOT the maker, but still cannot give the bank's yes.
-  const bankMaker = Object.keys(PEOPLE).find((k) => PEOPLE[k].bank && k !== checkerKey && ["ADMIN", "OPERATOR", "APPROVER"].includes(PEOPLE[k].role));
   if (!bankMaker) return;
   const bm = await signIn(bankMaker);
   const cr2 = must(

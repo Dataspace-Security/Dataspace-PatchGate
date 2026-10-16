@@ -134,6 +134,32 @@ describe("AUDITOR can never change anything", () => {
     }, 60_000);
   }
 
+  it("every user-admin mutation (create / edit / reset / unlock) answers 403 for a BANK admin", async () => {
+    ctx.user = { id: "u-bank-admin", role: "ADMIN", upn: "admin@bank-a.test", name: "Bank admin", tenantId: "tenant-default" };
+    const userRoutes = mutating.filter(({ key }) => key.startsWith("admin/users"));
+    const results: string[] = [];
+    let checked = 0;
+    for (const { file, key } of userRoutes) {
+      const mod = (await import(/* @vite-ignore */ file)) as Record<string, unknown>;
+      for (const method of METHODS) {
+        const handler = mod[method];
+        if (typeof handler !== "function") continue;
+        const actions = key.endsWith("[action]") ? ["reset-password", "reset-mfa", "unlock"] : [undefined];
+        for (const action of actions) {
+          checked++;
+          const params = { ...paramsFor(key), ...(action ? { action } : {}) };
+          const res = (await handler(request(method, key), { params: Promise.resolve(params) })) as Response;
+          const body = (await res.json()) as { error?: string };
+          if (res.status !== 403 || body.error !== "Accounts are managed by PatchGate platform administrators") {
+            results.push(`${method} /api/${key}${action ? ` (${action})` : ""} → ${res.status} ${body.error ?? ""}`);
+          }
+        }
+      }
+    }
+    expect(checked).toBe(5); // POST users, PATCH users/:id, POST users/:id/{reset-password,reset-mfa,unlock}
+    expect(results).toEqual([]);
+  });
+
   it("the same routes are not blanket-denied: an admin gets past the role gate (no 403 from requireWriter)", async () => {
     ctx.user = { id: "u-admin", role: "ADMIN", upn: "admin@patchgate.test", name: "Admin", tenantId: null };
     const mod = (await import("./change-requests/route")) as { POST: (r: Request) => Promise<Response> };
