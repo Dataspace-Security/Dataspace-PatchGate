@@ -36,7 +36,7 @@ const baseSchema = z.object({
   REPO_PUBLIC: z.enum(["true", "false"]).optional(),
   // Shared repository quota in GB: above it no more Windows-update files are downloaded (monitoring signal).
   REPO_MAX_GB: z.coerce.number().positive().max(1_000_000).default(500),
-  QUARANTINE_HOURS: z.coerce.number().int().min(0).max(720).default(48),
+  QUARANTINE_HOURS: z.coerce.number().int().min(0).max(720).default(0), // 0 = install as soon as verified (current choice); production: 48+ (GO-LIVE B6b)
   FETCH_TIMEOUT_MS: z.coerce.number().int().positive().default(600000),
   FETCH_MAX_BYTES: z.coerce.number().int().positive().default(2_147_483_648),
   GITHUB_TOKEN: z.string().optional(), // optional: raises GitHub API rate limit for manifest lookups
@@ -75,6 +75,9 @@ const baseSchema = z.object({
   // Key rotation only (RUNBOOK §9.4): the OLD AUTH_ENC_KEY, decrypt-only, until the re-encryption CLI ran.
   AUTH_ENC_KEY_PREVIOUS: z.string().regex(/^[0-9a-fA-F]{64}$/, "64 hex chars").optional(),
   // ---- Connector link (banks connect OUT to us) ----
+  // How often each site connector re-reads its Tactical agent list (SYNC_AGENTS: one Tactical API call, no PC
+  // traffic). New PCs appear in PatchGate within this time; "Sync agents now" on the Endpoints page is immediate.
+  AGENT_SYNC_MINUTES: z.coerce.number().int().min(5).max(1440).default(15),
   // PEM file with PatchGate's Ed25519 job-signing private key (production: mounted secret / KMS-backed file).
   JOB_SIGNING_KEY_FILE: z.string().optional(),
   // Who signs jobs (src/lib/connector/keys.ts): "file" = JOB_SIGNING_KEY_FILE in this process (lab/dev),

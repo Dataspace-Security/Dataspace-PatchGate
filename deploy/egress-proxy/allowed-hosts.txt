@@ -22,7 +22,8 @@ get.videolan.org
 www.7-zip.org
 www.wireshark.org
 
-# Microsoft Update content (only if the platform fetches Windows content itself)
-# .download.windowsupdate.com
-# .delivery.mp.microsoft.com
-# catalog.update.microsoft.com
+# Microsoft Update content: PatchGate delivers Windows updates itself (default windowsUpdateSource=PATCHGATE):
+# wsusscn2.cab (offline scan catalog), the Update Catalog lookup and the update files.
+.download.windowsupdate.com
+.delivery.mp.microsoft.com
+www.catalog.update.microsoft.com

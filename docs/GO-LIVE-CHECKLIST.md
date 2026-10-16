@@ -26,6 +26,7 @@ Legend: **[YOU]** = your decision or action · **[OPS]** = your server admin · 
 | B5 | OPS | `deploy/scripts/smoke-test.sh` — every check PASS. | ☐ |
 | B6 | OPS | Create the first platform admin with the tools image (§5); sign in and enrol the authenticator. | ☐ |
 | B6a | OPS | **`AUTH_MFA` must be `required`** (or unset) in `deploy/.env.production`: `/api/health` shows `"mfa":"required"`, no "Two-factor sign-in is OFF" banner, no `auth.mfa_disabled` event after the last restart. | ☐ |
+| B6b | OPS | **`QUARANTINE_HOURS` is 48 or more** in `deploy/.env.production` (default 0 = install as soon as verified, used for testing): new Windows update files and packages wait out the soak before any bank can deploy them. | ☐ |
 | B7 | OPS | Monitoring: alerts from RUNBOOK §8 (readiness auditChain/siemExport/repoQuota, connector offline > 10 min, job failure rate, disk, certificate expiry). | ☐ |
 | B8 | OPS | Restore drill once (§7.3) and record the result. | ☐ |
 
