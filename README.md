@@ -19,7 +19,8 @@ and an audit trail.
 **Try PatchGate on your own PC (test setup, all in Docker):**
 
 ```bash
-gh api -H "Accept: application/vnd.github.raw" "repos/Dataspace-Security/Dataspace-PatchGate/contents/kits/colleague-test/install-patchgate-test.sh?ref=main" > install-patchgate-test.sh && bash install-patchgate-test.sh
+curl -fsSLO https://raw.githubusercontent.com/Dataspace-Security/Dataspace-PatchGate/main/kits/colleague-test/install-patchgate-test.sh
+bash install-patchgate-test.sh
 ```
 
 Accounts, start over (`--reinstall`) and cleanup: [kits/colleague-test/START-HERE.md](kits/colleague-test/START-HERE.md)

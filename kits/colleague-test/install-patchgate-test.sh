@@ -12,7 +12,7 @@
 #          --kit-from <kits/colleague-test folder>  (developers: use local, not yet pushed kit scripts with the clone)
 #
 # Needs: Git (Git Bash on Windows), Docker (Docker Desktop with WSL2 on Windows), 16 GB RAM, 30 GB free disk, internet.
-# GitHub access (private repo): the GitHub CLI if you are signed in (`gh auth login`), otherwise a read-only
+# GitHub access: none for a public repo; for a private one the GitHub CLI if you are signed in (`gh auth login`), otherwise a read-only
 # fine-grained token (Repository access: this repo; Permissions: Contents = Read). The token is asked for without
 # echo, kept only in this process's memory, handed to git through a temporary askpass helper that holds no
 # secret, never written to disk, never put into the remote URL or the logs, and unset afterwards.
@@ -89,13 +89,18 @@ code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://github.com/
 [ "$code" = 200 ] || die "github.com not reachable (HTTP ${code:-none}): proxy/firewall?"
 ok "github.com reachable"
 
-# ------------------------------------------------------------------ 2. clone / update (private repo)
+# ------------------------------------------------------------------ 2. clone / update (public or private repo)
 phase "2. Source: $REPO_SLUG @ $REF"
 GIT_AUTH=()
 ASKPASS=""
 cleanup_auth() { [ -n "$ASKPASS" ] && rm -f "$ASKPASS"; unset PG_GH_TOKEN 2>/dev/null || true; }
 trap cleanup_auth EXIT
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+if GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote --quiet "https://github.com/$REPO_SLUG.git" HEAD >/dev/null 2>&1; then
+  # Public repository: no sign-in, no token.
+  GIT_AUTH=(-c credential.helper=)
+  export GIT_TERMINAL_PROMPT=0
+  ok "GitHub access: public repository (no sign-in needed)"
+elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   # Git asks the GitHub CLI for credentials (its own secure store); nothing is copied anywhere.
   GIT_AUTH=(-c credential.helper= -c 'credential.helper=!gh auth git-credential')
   ok "GitHub access: GitHub CLI ($(gh api user --jq .login 2>/dev/null || echo signed-in))"

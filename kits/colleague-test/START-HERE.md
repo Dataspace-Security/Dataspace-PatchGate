@@ -15,19 +15,17 @@ PatchGate repository.
 
 ## Option A: from GitHub (recommended)
 
-One script clones the private repository, **builds PatchGate from source** on your PC and installs everything.
-You need access to `Dataspace-Security/Dataspace-PatchGate`: either the GitHub CLI signed in (`gh auth login`),
-or a read-only fine-grained token (Repository access: that repo; Permissions: Contents = Read).
+One script clones the repository, **builds PatchGate from source** on your PC and installs everything.
+The repository is public: no GitHub sign-in or token needed.
 
 ```bash
 # in Git Bash (Windows) or a terminal (Linux), in an empty folder:
-gh api -H "Accept: application/vnd.github.raw" \
-  "repos/Dataspace-Security/Dataspace-PatchGate/contents/kits/colleague-test/install-patchgate-test.sh?ref=main" \
-  > install-patchgate-test.sh
+curl -fsSLO https://raw.githubusercontent.com/Dataspace-Security/Dataspace-PatchGate/main/kits/colleague-test/install-patchgate-test.sh
 bash install-patchgate-test.sh            # clone -> build images -> install (60-120 minutes the first time)
 ```
 
-Without the GitHub CLI (the token is typed, not shown; the script asks for it again for the clone):
+If the repository is made private again: sign in the GitHub CLI (`gh auth login`) — the script then uses it —
+or use a read-only fine-grained token (Contents: Read; typed, not shown; the script asks for it again for the clone):
 
 ```bash
 read -rs GH_TOKEN && curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
