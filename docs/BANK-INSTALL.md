@@ -11,7 +11,7 @@ The hosted multi-bank setup (TEAM-GUIDE steps 1–3) is unchanged; this page is 
 
 | | |
 |---|---|
-| Server | Ubuntu 22.04 / 24.04 or Debian 12, x86-64. 4+ CPU, 16 GB RAM, 100 GB disk (minimum 2 CPU / 12 GB) |
+| Server | Ubuntu 22.04 / 24.04 / 26.04 or Debian 12 / 13, x86-64. 4+ CPU, 16 GB RAM, 100 GB disk (minimum 2 CPU / 12 GB) |
 | During the install | internet from the server (GitHub, Docker Hub, download.docker.com, microsoft.com) |
 | Names | a bank internal domain, e.g. `bank.local`. Bank DNS: `patchgate`, `rmm`, `api`, `mesh`, `pg-cache` `.bank.local` → the server's LAN IP |
 | TLS | the bank's certificate for those 5 names (+ key + root CA), **or** let the installer create a bank CA |

@@ -231,8 +231,8 @@ preflight() {
   [ "$(uname -m)" = x86_64 ] || die "x86-64 required (found $(uname -m))"
   local id ver; id="$(os_field ID)"; ver="$(os_field VERSION_ID)"
   case "$id:$ver" in
-    ubuntu:22.04|ubuntu:24.04|debian:12) ok "OS $(os_field PRETTY_NAME)" ;;
-    *) die "supported: Ubuntu 22.04/24.04, Debian 12 (found $(os_field PRETTY_NAME))" ;;
+    ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12|debian:13) ok "OS $(os_field PRETTY_NAME)" ;;
+    *) die "supported: Ubuntu 22.04/24.04/26.04, Debian 12/13 (found $(os_field PRETTY_NAME))" ;;
   esac
   local cpus mem_gb; cpus="$(nproc)"; mem_gb="$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)"
   [ "$cpus" -ge 2 ] || die "at least 2 CPUs required (found $cpus; 4+ recommended)"

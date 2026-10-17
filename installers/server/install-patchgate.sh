@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PatchGate platform installer — OUR server (Ubuntu 22.04 / 24.04, Debian 12). Run as root.
+# PatchGate platform installer — OUR server (Ubuntu 22.04 / 24.04 / 26.04, Debian 12 / 13). Run as root.
 #
 #   sudo ./install-patchgate.sh                        # interactive first install (or safe re-run)
 #   sudo ./install-patchgate.sh --non-interactive --domain patchgate.example.com \
@@ -237,9 +237,9 @@ preflight() {
   [ -r /etc/os-release ] || die "cannot read /etc/os-release"
   local ID VERSION_ID PRETTY_NAME; ID="$(os_field ID)"; VERSION_ID="$(os_field VERSION_ID)"; PRETTY_NAME="$(os_field PRETTY_NAME)"
   case "${ID:-}:${VERSION_ID:-}" in
-    ubuntu:22.04|ubuntu:24.04|debian:12) ok "OS ${PRETTY_NAME:-$ID $VERSION_ID}" ;;
+    ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12|debian:13) ok "OS ${PRETTY_NAME:-$ID $VERSION_ID}" ;;
     *) if [ "${PG_ALLOW_ANY_OS:-0}" = 1 ]; then warn "untested OS ${PRETTY_NAME:-unknown} (PG_ALLOW_ANY_OS=1)"
-       else die "supported: Ubuntu 22.04/24.04, Debian 12 (found ${PRETTY_NAME:-unknown}; PG_ALLOW_ANY_OS=1 to try anyway)"; fi ;;
+       else die "supported: Ubuntu 22.04/24.04/26.04, Debian 12/13 (found ${PRETTY_NAME:-unknown}; PG_ALLOW_ANY_OS=1 to try anyway)"; fi ;;
   esac
   local cpus mem_gb disk_gb probe_dir
   cpus="$(nproc)"; mem_gb="$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)"
