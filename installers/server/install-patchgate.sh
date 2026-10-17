@@ -411,6 +411,13 @@ copy_deploy() {
   chmod 0755 "$DEPLOY/scripts/"*.sh "$DEPLOY/postgres/"*.sh "$DEPLOY/postgres/initdb/"*.sh "$DEPLOY/scheduler/"*.sh 2>/dev/null || true
   chmod 0644 "$DEPLOY/nginx/nginx.conf" "$DEPLOY/nginx/templates/"* "$DEPLOY/nginx/allowlists/"*.conf 2>/dev/null || true
   chmod 0755 "$DEPLOY" "$DEPLOY/nginx" "$DEPLOY/nginx/templates" "$DEPLOY/nginx/allowlists" "$DEPLOY/ca" "$DEPLOY/tls"
+  # Containers run as non-root users (postgres, squid, scheduler 10001, prometheus, ...) and read their
+  # bind-mounted config/scripts: with the installer's umask 027 a fresh git clone is root-only (0750/0640),
+  # e.g. Postgres then cannot read postgres/initdb ("Permission denied") and restart-loops. Make the
+  # NON-secret deploy content world-readable; secrets/, tls/ keys, backups/ and .env.production stay as they are.
+  find "$DEPLOY" \( -path "$DEPLOY/secrets" -o -path "$DEPLOY/backups" -o -path "$DEPLOY/tls" \) -prune -o \
+       -type d -exec chmod a+rx {} + -o \
+       -type f ! -name '.env.production' ! -name '*.key' ! -name '*privkey*' -exec chmod a+r {} +
   mkdir -p "$DEPLOY/backups"
   ok "copied (existing .env.production, secrets/, tls/, ca/ and allow-lists kept)"
 }
