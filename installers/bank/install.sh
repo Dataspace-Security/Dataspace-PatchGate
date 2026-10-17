@@ -289,6 +289,12 @@ check_foreign() {
 # ------------------------------------------------------------------ 2. source
 bootstrap_source() {
   phase "2. Source"
+  # A re-run of the one-link command (resume after a failure) must pick up fixes: the saved state points at
+  # our managed clone, so refresh it (fetch + checkout REF) instead of reusing the old checkout. The
+  # re-exec'd child (PG_BANK_MANAGED=1) and --source-dir runs are left alone.
+  if [ "$MANAGED_CLONE" = 1 ] && [ -z "${PG_BANK_MANAGED:-}" ] && [ "$SOURCE_DIR" = "$BANK_DIR/src" ]; then
+    SOURCE_DIR=""
+  fi
   if [ -n "$SOURCE_DIR" ]; then
     [ -f "$SOURCE_DIR/deploy/docker-compose.prod.yml" ] && [ -f "$SOURCE_DIR/installers/site/install-site.sh" ] \
       || die "--source-dir $SOURCE_DIR is not a PatchGate checkout"
