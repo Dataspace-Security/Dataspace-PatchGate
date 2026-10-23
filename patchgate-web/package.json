@@ -23,7 +23,7 @@
     "@prisma/client": "^6.12.0",
     "cron-parser": "^5.10.2",
     "lucide-react": "^1.57.0",
-    "next": "16.4.0",
+    "next": "16.4.2",
     "nodemailer": "^10.1.1",
     "openid-client": "^6.8.8",
     "react": "19.3.0",
