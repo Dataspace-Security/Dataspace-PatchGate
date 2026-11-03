@@ -38,7 +38,7 @@ jobs:
       packages: write     # push to ghcr.io (default registry)
       id-token: write     # keyless cosign (OIDC)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
